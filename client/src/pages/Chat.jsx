@@ -1283,7 +1283,7 @@ const Chat = () => {
                 />
 
                 {/* Single "+" attach menu — photo/video OR voice */}
-                <div className="relative self-end">
+                <div className="relative">
                   <button
                     type="button"
                     onClick={() => setAttachMenuOpen((v) => !v)}
@@ -1364,7 +1364,7 @@ const Chat = () => {
                   disabled={sending || (!draft.trim() && pendingFiles.length === 0)}
                   aria-label="Send"
                   title="Send (Enter)"
-                  className="grid h-10 w-10 flex-none self-end place-items-center rounded-full bg-accent text-accent-text transition hover:bg-amber-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="grid h-10 w-10 flex-none place-items-center rounded-full bg-accent text-accent-text transition hover:bg-amber-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <PaperPlaneIcon className="h-4 w-4" />
                 </button>
