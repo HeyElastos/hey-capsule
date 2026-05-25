@@ -19,10 +19,11 @@ import CreateRoomModal from "../components/CreateRoomModal";
 import ProfilePopover from "../components/ProfilePopover";
 import {
   CloseIcon,
+  ImageIcon,
   MicIcon,
-  PaperclipIcon,
   PaperPlaneIcon,
   PlayIcon,
+  PlusIcon,
   ShieldCheckIcon,
   StopIcon,
   TrashIcon,
@@ -227,6 +228,7 @@ const Chat = () => {
   const [roomData, setRoomData] = useState(null);
   const [createRoomOpen, setCreateRoomOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const activePeerDid = activeConvo?.type === "dm" ? activeConvo.id : null;
   const activeRoomId = activeConvo?.type === "room" ? activeConvo.id : null;
   const [draft, setDraft] = useState("");
@@ -1269,7 +1271,7 @@ const Chat = () => {
             ) : (
               <form
                 onSubmit={handleSend}
-                className="flex items-end gap-2 border-t border-black/5 px-3 py-3 dark:border-white/10"
+                className="relative flex items-end gap-2 border-t border-black/5 px-3 py-3 dark:border-white/10"
               >
                 <input
                   ref={fileInputRef}
@@ -1279,16 +1281,59 @@ const Chat = () => {
                   onChange={handleFilesChosen}
                   className="hidden"
                 />
-                <button
-                  type="button"
-                  onClick={handlePickFiles}
-                  disabled={sending || pendingFiles.length >= MAX_ATTACHMENTS}
-                  aria-label="Attach photo or video"
-                  title="Attach (up to 4)"
-                  className="grid h-10 w-10 flex-none place-items-center rounded-full text-muted transition hover:bg-black/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-white/10"
-                >
-                  <PaperclipIcon className="h-5 w-5" />
-                </button>
+
+                {/* Single "+" attach menu — photo/video OR voice */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setAttachMenuOpen((v) => !v)}
+                    disabled={sending}
+                    aria-label="Attach"
+                    title="Attach photo, video, or voice"
+                    className={`grid h-10 w-10 flex-none place-items-center rounded-full transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ${
+                      attachMenuOpen
+                        ? "rotate-45 bg-accent/20 text-accent"
+                        : "text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/10"
+                    }`}
+                  >
+                    <PlusIcon className="h-5 w-5" />
+                  </button>
+                  {attachMenuOpen && (
+                    <>
+                      {/* Outside-click backdrop */}
+                      <div
+                        className="fixed inset-0 z-10"
+                        onClick={() => setAttachMenuOpen(false)}
+                      />
+                      <div className="absolute bottom-12 left-0 z-20 w-44 animate-pop-in overflow-hidden rounded-2xl border border-black/10 bg-white/95 shadow-xl backdrop-blur-xl dark:border-white/15 dark:bg-neutral-900/95">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAttachMenuOpen(false);
+                            handlePickFiles();
+                          }}
+                          disabled={pendingFiles.length >= MAX_ATTACHMENTS}
+                          className="flex w-full items-center gap-3 px-3 py-2.5 text-sm text-primary transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-white/10"
+                        >
+                          <ImageIcon className="h-4 w-4 text-muted" />
+                          <span>Photo or video</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAttachMenuOpen(false);
+                            handleStartRecording();
+                          }}
+                          className="flex w-full items-center gap-3 px-3 py-2.5 text-sm text-primary transition hover:bg-black/5 dark:hover:bg-white/10"
+                        >
+                          <MicIcon className="h-4 w-4 text-muted" />
+                          <span>Voice message</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+
                 <textarea
                   ref={composeRef}
                   value={draft}
@@ -1304,28 +1349,15 @@ const Chat = () => {
                 {draft.length > 1800 && (
                   <span className="text-[10px] text-muted">{2000 - draft.length}</span>
                 )}
-                {draft.trim() || pendingFiles.length > 0 ? (
-                  <button
-                    type="submit"
-                    disabled={sending}
-                    aria-label="Send"
-                    title="Send (Enter)"
-                    className="grid h-10 w-10 flex-none place-items-center rounded-full bg-accent text-accent-text transition hover:bg-amber-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    <PaperPlaneIcon className="h-4 w-4" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleStartRecording}
-                    disabled={sending}
-                    aria-label="Record voice"
-                    title="Hold to record (tap to start)"
-                    className="grid h-10 w-10 flex-none place-items-center rounded-full text-muted transition hover:bg-accent/15 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-accent/15"
-                  >
-                    <MicIcon className="h-5 w-5" />
-                  </button>
-                )}
+                <button
+                  type="submit"
+                  disabled={sending || (!draft.trim() && pendingFiles.length === 0)}
+                  aria-label="Send"
+                  title="Send (Enter)"
+                  className="grid h-10 w-10 flex-none place-items-center rounded-full bg-accent text-accent-text transition hover:bg-amber-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <PaperPlaneIcon className="h-4 w-4" />
+                </button>
               </form>
             )}
           </>
