@@ -1,4 +1,11 @@
 import axios from "axios";
+import {
+  generateAuthKey,
+  hashAuthKey,
+  expandKeypair,
+} from "../lib/identity";
+import { isCapsuleMode } from "../lib/mode";
+import { storage as runtimeStorage } from "../lib/runtime";
 
 const API = axios.create({
   baseURL: "/api",
@@ -56,7 +63,106 @@ API.interceptors.response.use(
   }
 );
 
+// ─── signup/signin: capsule mode vs server mode ──────────────────────
+//
+// In server mode (default): POST to Hey's Express backend, which generates
+// the authKey + JWT, stores authKeyHash + user record, returns everything.
+//
+// In capsule mode: there is no Hey backend. We generate the authKey in the
+// browser, derive an Ed25519 keypair, compute did:key, hash the authKey for
+// later verification, and write the profile to /api/localhost storage via
+// the runtime. The shape we return matches the server response so the rest
+// of the UI doesn't need to change.
+
+const PROFILE_FILE = "profile.json";
+
+const newUserRecord = ({ name, didKey, authKeyHash }) => ({
+  id: crypto.randomUUID(),
+  name: name.trim().slice(0, 30),
+  authKeyHash,
+  didKey,
+  role: "general",
+  avatar: "",
+  bio: "",
+  followers: [],
+  following: [],
+  pendingFollowers: [],
+  pendingFollowing: [],
+  createdAt: new Date().toISOString(),
+});
+
+const publicUserShape = (user) => ({
+  id: user.id,
+  name: user.name,
+  bio: user.bio || "",
+  avatar: user.avatar || "",
+  role: user.role,
+  didKey: user.didKey || "",
+  counts: {
+    followers: (user.followers || []).length,
+    following: (user.following || []).length,
+  },
+});
+
+const capsuleSignUp = async ({ name }) => {
+  if (!name || !name.trim()) {
+    throw new Error("Display name is required");
+  }
+  const existing = await runtimeStorage.readJson(PROFILE_FILE);
+  if (existing) {
+    const err = new Error("A profile already exists on this node — sign in instead.");
+    err.response = { data: { message: err.message } };
+    throw err;
+  }
+  const authKey = generateAuthKey();
+  const { didKey } = expandKeypair(authKey);
+  const authKeyHash = await hashAuthKey(authKey);
+
+  const user = newUserRecord({ name, didKey, authKeyHash });
+  await runtimeStorage.writeJson(PROFILE_FILE, user);
+
+  return {
+    message: "User created successfully",
+    user: publicUserShape(user),
+    authKey,
+    accessToken: "capsule-session",
+    refreshToken: "capsule-session",
+    accessTokenUpdatedAt: new Date().toISOString(),
+  };
+};
+
+const capsuleSignIn = async ({ authKey }) => {
+  if (!authKey || !authKey.trim()) {
+    throw new Error("Hey key is required");
+  }
+  const trimmed = authKey.trim();
+  const user = await runtimeStorage.readJson(PROFILE_FILE);
+  if (!user) {
+    const err = new Error("No profile on this node — sign up first.");
+    err.response = { data: { message: err.message } };
+    throw err;
+  }
+  const hash = await hashAuthKey(trimmed);
+  if (hash !== user.authKeyHash) {
+    const err = new Error("Invalid Hey key");
+    err.response = { status: 401, data: { message: err.message } };
+    throw err;
+  }
+  if (!user.didKey) {
+    user.didKey = expandKeypair(trimmed).didKey;
+    await runtimeStorage.writeJson(PROFILE_FILE, user);
+  }
+  return {
+    message: "Signed in successfully",
+    user: publicUserShape(user),
+    accessToken: "capsule-session",
+    refreshToken: "capsule-session",
+    accessTokenUpdatedAt: new Date().toISOString(),
+  };
+};
+
 export const signUp = async (payload) => {
+  if (isCapsuleMode()) return capsuleSignUp(payload);
   const response = await API.post("/users/signup", payload, {
     headers: { "Content-Type": "application/json" },
   });
@@ -64,6 +170,7 @@ export const signUp = async (payload) => {
 };
 
 export const signIn = async (payload) => {
+  if (isCapsuleMode()) return capsuleSignIn(payload);
   const response = await API.post("/users/signin", payload);
   return response.data;
 };
