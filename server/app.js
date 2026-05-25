@@ -122,7 +122,7 @@ app.use("/users", (req, res, next) => {
 });
 
 app.use("/chat", (req, res, next) => {
-  // Reads pass through; writes (POST) rate-limited to prevent flood.
+  // Reads pass through; writes (POST/PATCH/DELETE) rate-limited.
   if (req.method === "GET") return next();
   return writeLimiter(req, res, next);
 });

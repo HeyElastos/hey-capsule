@@ -18,6 +18,8 @@ const { readDb, writeDb } = require("../utils/db");
 
 const MAX_CONTENT_LEN = 2000;
 const PAGE_LIMIT = 100;
+const EDIT_WINDOW_MS = 15 * 60 * 1000;
+const DEFAULT_REACTIONS = new Set(["❤️", "🔥", "😂", "😮", "😢", "👏", "💯", "✨"]);
 
 // Find the local user record that owns a did:key. Returns undefined for
 // did:keys that don't map to any local account (Phase 3 federation will
@@ -35,10 +37,17 @@ const toPublicMessage = (m) => ({
   thread_id: m.threadId,
   sender_did: m.senderDid,
   recipient_did: m.recipientDid,
-  content: m.content,
+  content: m.deletedAt ? null : m.content,
   ts: m.ts,
   signature: m.signature || null,
+  reply_to: m.replyTo || null,
+  reactions: m.reactions || {},
+  read_at: m.readAt || null,
+  edited_at: m.editedAt || null,
+  deleted_at: m.deletedAt || null,
 });
+
+const findMessage = (db, id) => db.chatMessages.find((m) => m.id === id);
 
 // GET /chat/threads — list every thread the caller participates in,
 // newest-message-first, with last-message preview.
@@ -149,6 +158,15 @@ const sendMessage = async (req, res) => {
       return res.status(413).json({ message: `Message exceeds ${MAX_CONTENT_LEN} chars` });
     }
 
+    // Validate reply target: must exist and belong to the same thread.
+    let replyTo = null;
+    if (req.body?.reply_to) {
+      const target = findMessage(db, req.body.reply_to);
+      if (target && target.threadId === threadIdFor(me.didKey, peerDid)) {
+        replyTo = target.id;
+      }
+    }
+
     const message = {
       id: crypto.randomUUID(),
       threadId: threadIdFor(me.didKey, peerDid),
@@ -157,6 +175,11 @@ const sendMessage = async (req, res) => {
       content,
       ts: Date.now(),
       signature: null, // Phase 3: filled by client-side signer
+      replyTo,
+      reactions: {},
+      readAt: null,
+      editedAt: null,
+      deletedAt: null,
     };
 
     db.chatMessages.push(message);
@@ -165,6 +188,140 @@ const sendMessage = async (req, res) => {
     return res.status(201).json({ message: toPublicMessage(message) });
   } catch {
     return res.status(500).json({ message: "Failed to send message" });
+  }
+};
+
+// PATCH /chat/messages/:id — edit a message you sent, within EDIT_WINDOW_MS.
+const editMessage = async (req, res) => {
+  try {
+    const db = await readDb();
+    const me = db.users.find((u) => u.id === req.user.id);
+    if (!me?.didKey) return res.status(409).json({ message: "Identity not ready" });
+
+    const msg = findMessage(db, req.params.id);
+    if (!msg) return res.status(404).json({ message: "Message not found" });
+    if (msg.senderDid !== me.didKey) {
+      return res.status(403).json({ message: "Not your message" });
+    }
+    if (msg.deletedAt) {
+      return res.status(410).json({ message: "Message was deleted" });
+    }
+    if (Date.now() - msg.ts > EDIT_WINDOW_MS) {
+      return res.status(403).json({ message: "Edit window expired" });
+    }
+
+    const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+    if (!content) return res.status(400).json({ message: "Message can't be empty" });
+    if (content.length > MAX_CONTENT_LEN) {
+      return res.status(413).json({ message: `Message exceeds ${MAX_CONTENT_LEN} chars` });
+    }
+    if (content === msg.content) {
+      // No-op edit; don't bump editedAt.
+      return res.status(200).json({ message: toPublicMessage(msg) });
+    }
+
+    msg.content = content;
+    msg.editedAt = Date.now();
+    await writeDb(db);
+    return res.status(200).json({ message: toPublicMessage(msg) });
+  } catch {
+    return res.status(500).json({ message: "Failed to edit message" });
+  }
+};
+
+// DELETE /chat/messages/:id — soft-delete a message you sent. The row stays
+// so reply threads don't lose context; the content is just redacted.
+const deleteMessage = async (req, res) => {
+  try {
+    const db = await readDb();
+    const me = db.users.find((u) => u.id === req.user.id);
+    if (!me?.didKey) return res.status(409).json({ message: "Identity not ready" });
+
+    const msg = findMessage(db, req.params.id);
+    if (!msg) return res.status(404).json({ message: "Message not found" });
+    if (msg.senderDid !== me.didKey) {
+      return res.status(403).json({ message: "Not your message" });
+    }
+    if (msg.deletedAt) {
+      return res.status(200).json({ message: toPublicMessage(msg) });
+    }
+
+    msg.deletedAt = Date.now();
+    msg.reactions = {}; // reactions on a deleted message no longer make sense
+    await writeDb(db);
+    return res.status(200).json({ message: toPublicMessage(msg) });
+  } catch {
+    return res.status(500).json({ message: "Failed to delete message" });
+  }
+};
+
+// POST /chat/messages/:id/reactions — toggle a reaction on or off.
+// Body: { emoji }. Only allowed if you're a participant in the thread.
+const reactToMessage = async (req, res) => {
+  try {
+    const db = await readDb();
+    const me = db.users.find((u) => u.id === req.user.id);
+    if (!me?.didKey) return res.status(409).json({ message: "Identity not ready" });
+
+    const msg = findMessage(db, req.params.id);
+    if (!msg) return res.status(404).json({ message: "Message not found" });
+    if (msg.deletedAt) return res.status(410).json({ message: "Message was deleted" });
+
+    // Only thread participants may react.
+    if (msg.senderDid !== me.didKey && msg.recipientDid !== me.didKey) {
+      return res.status(403).json({ message: "Not your thread" });
+    }
+
+    const emoji = typeof req.body?.emoji === "string" ? req.body.emoji : "";
+    if (!DEFAULT_REACTIONS.has(emoji)) {
+      return res.status(400).json({ message: "Unsupported emoji" });
+    }
+
+    if (!msg.reactions) msg.reactions = {};
+    const list = msg.reactions[emoji] || [];
+    const idx = list.indexOf(me.didKey);
+    if (idx >= 0) {
+      list.splice(idx, 1);
+    } else {
+      list.push(me.didKey);
+    }
+    if (list.length === 0) delete msg.reactions[emoji];
+    else msg.reactions[emoji] = list;
+
+    await writeDb(db);
+    return res.status(200).json({ message: toPublicMessage(msg) });
+  } catch {
+    return res.status(500).json({ message: "Failed to react" });
+  }
+};
+
+// POST /chat/threads/:peerDid/read — mark every message from the peer as read.
+// Returns the count of messages newly marked.
+const markThreadRead = async (req, res) => {
+  try {
+    const db = await readDb();
+    const me = db.users.find((u) => u.id === req.user.id);
+    if (!me?.didKey) return res.status(409).json({ message: "Identity not ready" });
+
+    const peerDid = req.params.peerDid;
+    if (!peerDid || !peerDid.startsWith("did:key:z")) {
+      return res.status(400).json({ message: "Invalid peer did" });
+    }
+
+    const tid = threadIdFor(me.didKey, peerDid);
+    const now = Date.now();
+    let marked = 0;
+    for (const m of db.chatMessages) {
+      if (m.threadId !== tid) continue;
+      if (m.senderDid !== peerDid) continue; // only mark inbound msgs
+      if (m.readAt) continue;
+      m.readAt = now;
+      marked++;
+    }
+    if (marked > 0) await writeDb(db);
+    return res.status(200).json({ marked });
+  } catch {
+    return res.status(500).json({ message: "Failed to mark read" });
   }
 };
 
@@ -200,4 +357,13 @@ const followPeer = async (req, res) => {
   }
 };
 
-module.exports = { listThreads, getThread, sendMessage, followPeer };
+module.exports = {
+  listThreads,
+  getThread,
+  sendMessage,
+  editMessage,
+  deleteMessage,
+  reactToMessage,
+  markThreadRead,
+  followPeer,
+};

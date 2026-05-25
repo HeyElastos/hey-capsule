@@ -1,22 +1,140 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useProfile } from "../hooks/useProfile";
-import { listThreads, getThread, sendMessage } from "../api/chat";
+import {
+  listThreads,
+  getThread,
+  sendMessage,
+  editMessage,
+  deleteMessage,
+  reactToMessage,
+  markThreadRead,
+} from "../api/chat";
 import AddFriendModal from "../components/AddFriendModal";
-import { PaperPlaneIcon, ShieldCheckIcon } from "../components/icons";
+import {
+  CheckIcon,
+  CloseIcon,
+  PaperPlaneIcon,
+  ShieldCheckIcon,
+  TrashIcon,
+} from "../components/icons";
 
 const POLL_MS = 4000;
-const DID_TRUNC = (s) => (s ? s.slice(0, 18) + "…" : "");
+const EDIT_WINDOW_MS = 15 * 60 * 1000;
+const DEFAULT_REACTIONS = ["❤️", "🔥", "😂", "😮", "😢", "👏", "💯", "✨"];
+const DID_TRUNC = (s) => (s ? `${s.slice(0, 12)}…${s.slice(-6)}` : "");
 
-const Avatar = ({ name, avatar, size = "h-10 w-10", textSize = "text-sm" }) => {
-  const letter = (name || "?").charAt(0).toUpperCase();
+const AVATAR_PALETTE = [
+  ["from-amber-400", "to-pink-400"],
+  ["from-indigo-400", "to-cyan-400"],
+  ["from-emerald-400", "to-sky-400"],
+  ["from-rose-400", "to-orange-400"],
+  ["from-violet-400", "to-fuchsia-400"],
+  ["from-yellow-400", "to-red-400"],
+];
+
+const paletteFor = (did) => {
+  if (!did) return AVATAR_PALETTE[0];
+  let h = 0;
+  for (let i = 0; i < did.length; i++) h = (h * 31 + did.charCodeAt(i)) | 0;
+  return AVATAR_PALETTE[Math.abs(h) % AVATAR_PALETTE.length];
+};
+
+const Avatar = ({ name, avatar, did, size = "h-10 w-10", textSize = "text-sm" }) => {
+  const letter = (name || did?.slice(9, 10) || "?").charAt(0).toUpperCase();
   if (avatar) {
-    return <img src={avatar} alt={name} className={`${size} rounded-full object-cover`} />;
+    return <img src={avatar} alt={name} className={`${size} flex-none rounded-full object-cover`} />;
   }
+  const [from, to] = paletteFor(did);
   return (
     <div
-      className={`${size} flex-none rounded-full bg-gradient-to-br from-amber-400 to-pink-400 grid place-items-center font-semibold text-black/80 ${textSize}`}
+      className={`${size} grid flex-none place-items-center rounded-full bg-gradient-to-br ${from} ${to} font-bold text-black/80 ${textSize}`}
     >
       {letter}
+    </div>
+  );
+};
+
+const relativeTime = (ts) => {
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return "now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
+  const date = new Date(ts);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const yest = new Date(today);
+  yest.setDate(today.getDate() - 1);
+  const msgDate = new Date(date);
+  msgDate.setHours(0, 0, 0, 0);
+  if (msgDate.getTime() === yest.getTime()) return "yest";
+  if (Date.now() - msgDate.getTime() < 7 * 86_400_000) {
+    return date.toLocaleDateString([], { weekday: "short" });
+  }
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+};
+
+const dayLabel = (ts) => {
+  const date = new Date(ts);
+  date.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const yest = new Date(today);
+  yest.setDate(today.getDate() - 1);
+  if (date.getTime() === today.getTime()) return "Today";
+  if (date.getTime() === yest.getTime()) return "Yesterday";
+  return date.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
+};
+
+const groupMessages = (messages) => {
+  const days = [];
+  let currentDay = null;
+  let currentCluster = null;
+  const CLUSTER_GAP_MS = 5 * 60_000;
+
+  for (const m of messages) {
+    const label = dayLabel(m.ts);
+    if (!currentDay || currentDay.day !== label) {
+      currentDay = { day: label, clusters: [] };
+      days.push(currentDay);
+      currentCluster = null;
+    }
+    const prevInCluster = currentCluster?.messages[currentCluster.messages.length - 1];
+    const sameSender = currentCluster?.sender_did === m.sender_did;
+    const closeInTime = prevInCluster && m.ts - prevInCluster.ts < CLUSTER_GAP_MS;
+    if (!sameSender || !closeInTime) {
+      currentCluster = { sender_did: m.sender_did, messages: [] };
+      currentDay.clusters.push(currentCluster);
+    }
+    currentCluster.messages.push(m);
+  }
+  return days;
+};
+
+// Reaction picker — opens on click of the smile button in the hover toolbar.
+const ReactionPicker = ({ onPick, onClose }) => {
+  const ref = useRef(null);
+  useEffect(() => {
+    const handler = (e) => {
+      if (!ref.current?.contains(e.target)) onClose?.();
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+  return (
+    <div
+      ref={ref}
+      className="animate-pop-in absolute -top-12 left-1/2 z-20 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-black/10 bg-white/95 px-1.5 py-1 shadow-lg backdrop-blur-md dark:border-white/10 dark:bg-neutral-900/95"
+    >
+      {DEFAULT_REACTIONS.map((e) => (
+        <button
+          key={e}
+          type="button"
+          onClick={() => onPick(e)}
+          className="grid h-8 w-8 place-items-center rounded-full text-base transition hover:scale-125 hover:bg-black/5 dark:hover:bg-white/10"
+        >
+          {e}
+        </button>
+      ))}
     </div>
   );
 };
@@ -25,15 +143,32 @@ const Chat = () => {
   const profile = useProfile();
   const token = profile?.accessToken;
   const myDid = profile?.user?.didKey || "";
+  const myName = profile?.user?.name || "";
 
   const [threads, setThreads] = useState([]);
   const [activePeerDid, setActivePeerDid] = useState(null);
-  const [threadData, setThreadData] = useState(null); // {peer, messages}
+  const [threadData, setThreadData] = useState(null);
   const [draft, setDraft] = useState("");
+  const [replyingTo, setReplyingTo] = useState(null); // message object
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [pickerForId, setPickerForId] = useState(null);
   const [sending, setSending] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [error, setError] = useState(null);
+  const [didCopied, setDidCopied] = useState(false);
+
   const threadEndRef = useRef(null);
+  const composeRef = useRef(null);
+  const editRef = useRef(null);
+  const lastMessageCountRef = useRef(0);
+
+  // Quick lookup of any message in the current thread (for reply previews).
+  const messagesById = useMemo(() => {
+    const map = new Map();
+    for (const m of threadData?.messages || []) map.set(m.id, m);
+    return map;
+  }, [threadData?.messages]);
 
   const refreshThreads = useCallback(async () => {
     if (!token) return;
@@ -55,18 +190,14 @@ const Chat = () => {
     }
   }, [token]);
 
-  // Initial threads load
   useEffect(() => { refreshThreads(); }, [refreshThreads]);
 
-  // Poll threads list every POLL_MS so new messages from other users appear.
-  // Phase 3 will swap this for a WS / Carrier subscription.
   useEffect(() => {
     if (!token) return;
     const id = setInterval(refreshThreads, POLL_MS);
     return () => clearInterval(id);
   }, [token, refreshThreads]);
 
-  // When user picks a thread, load it and start polling for new messages.
   useEffect(() => {
     if (!activePeerDid) return;
     refreshThread(activePeerDid);
@@ -74,31 +205,76 @@ const Chat = () => {
     return () => clearInterval(id);
   }, [activePeerDid, refreshThread]);
 
-  // Auto-scroll to newest on thread update / new message
+  // Mark inbound messages as read whenever we view a thread that has unread
+  // ones. Throttled implicitly — we only call when the count of unread
+  // changes, so the server call is rare.
   useEffect(() => {
-    if (threadEndRef.current) {
-      threadEndRef.current.scrollIntoView({ behavior: "smooth" });
+    if (!activePeerDid || !threadData?.messages) return;
+    const unreadFromPeer = threadData.messages.some(
+      (m) => m.sender_did !== myDid && !m.read_at && !m.deleted_at
+    );
+    if (unreadFromPeer) {
+      markThreadRead(token, activePeerDid).catch(() => {});
     }
-  }, [threadData?.messages?.length, activePeerDid]);
+  }, [activePeerDid, threadData?.messages, myDid, token]);
 
-  const handleSend = async (e) => {
-    e.preventDefault();
+  useEffect(() => {
+    const count = threadData?.messages?.length || 0;
+    if (count > lastMessageCountRef.current) {
+      threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+    lastMessageCountRef.current = count;
+  }, [threadData?.messages?.length]);
+
+  useEffect(() => { lastMessageCountRef.current = 0; }, [activePeerDid]);
+
+  useEffect(() => {
+    const el = composeRef.current;
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+  }, [draft]);
+
+  // Focus the inline edit textarea on open, place cursor at end.
+  useEffect(() => {
+    if (editingId && editRef.current) {
+      editRef.current.focus();
+      const len = editRef.current.value.length;
+      editRef.current.setSelectionRange(len, len);
+    }
+  }, [editingId]);
+
+  const handleSend = useCallback(async (e) => {
+    e?.preventDefault?.();
     if (!activePeerDid || !draft.trim() || sending) return;
     setSending(true);
     setError(null);
     const text = draft.trim();
+    const replyTargetId = replyingTo?.id || null;
     setDraft("");
+    setReplyingTo(null);
     try {
-      const newMsg = await sendMessage(token, activePeerDid, text);
+      const newMsg = await sendMessage(token, activePeerDid, text, replyTargetId);
       setThreadData((prev) => prev
         ? { ...prev, messages: [...prev.messages, newMsg] }
         : prev);
       refreshThreads();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to send");
-      setDraft(text); // restore for retry
+      setDraft(text);
+      if (replyTargetId) setReplyingTo(replyingTo);
     } finally {
       setSending(false);
+    }
+  }, [activePeerDid, draft, replyingTo, sending, token, refreshThreads]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+    if (e.key === "Escape" && replyingTo) {
+      setReplyingTo(null);
     }
   };
 
@@ -109,21 +285,88 @@ const Chat = () => {
     refreshThreads();
   };
 
-  const sortedThreads = useMemo(() => threads, [threads]);
+  const handleCopyDid = async () => {
+    if (!myDid) return;
+    try {
+      await navigator.clipboard.writeText(myDid);
+      setDidCopied(true);
+      setTimeout(() => setDidCopied(false), 2000);
+    } catch { /* clipboard blocked */ }
+  };
+
+  // ─── Message actions ─────────────────────────────────────────────
+  const updateMessageInPlace = (updated) => {
+    setThreadData((prev) => prev
+      ? { ...prev, messages: prev.messages.map((m) => (m.id === updated.id ? updated : m)) }
+      : prev);
+  };
+
+  const handleReact = async (messageId, emoji) => {
+    setPickerForId(null);
+    try {
+      const updated = await reactToMessage(token, messageId, emoji);
+      updateMessageInPlace(updated);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to react");
+    }
+  };
+
+  const handleReplyClick = (m) => {
+    setReplyingTo(m);
+    composeRef.current?.focus();
+  };
+
+  const handleEditStart = (m) => {
+    setEditingId(m.id);
+    setEditDraft(m.content || "");
+  };
+
+  const handleEditCancel = () => {
+    setEditingId(null);
+    setEditDraft("");
+  };
+
+  const handleEditSave = async () => {
+    if (!editingId) return;
+    const text = editDraft.trim();
+    if (!text) {
+      handleEditCancel();
+      return;
+    }
+    try {
+      const updated = await editMessage(token, editingId, text);
+      updateMessageInPlace(updated);
+      handleEditCancel();
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to edit");
+    }
+  };
+
+  const handleDelete = async (messageId) => {
+    if (!window.confirm("Delete this message?")) return;
+    try {
+      const updated = await deleteMessage(token, messageId);
+      updateMessageInPlace(updated);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to delete");
+    }
+  };
+
+  const grouped = useMemo(
+    () => groupMessages(threadData?.messages || []),
+    [threadData?.messages]
+  );
 
   if (!profile) {
-    return (
-      <div className="mt-24 text-center text-sm text-muted">Sign in to chat.</div>
-    );
+    return <div className="mt-24 text-center text-sm text-muted">Sign in to chat.</div>;
   }
 
   if (!myDid) {
     return (
-      <div className="mx-auto mt-24 max-w-md rounded-2xl border border-amber-400/30 bg-amber-400/10 p-6 text-center">
+      <div className="mx-auto mt-24 max-w-md animate-fade-in rounded-2xl border border-amber-400/30 bg-amber-400/10 p-6 text-center">
         <p className="text-sm text-primary">
           Your account is missing a federation identity. Sign out and back in to
-          enable chat — your existing recovery key derives it automatically, no
-          re-signup needed.
+          enable chat — your existing recovery key derives it automatically.
         </p>
       </div>
     );
@@ -131,144 +374,379 @@ const Chat = () => {
 
   return (
     <div className="mx-auto grid max-w-6xl gap-4 sm:grid-cols-[300px,1fr]">
-      {/* ───────────────────────── Sidebar ───────────────────────── */}
-      <aside className="frosted-card flex flex-col gap-2 p-3">
-        <div className="flex items-center justify-between px-1 pb-1">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
-            Chats
-          </h2>
+      {/* ────────────────────────── Sidebar ────────────────────────── */}
+      <aside className="frosted-card flex h-[72vh] flex-col p-3">
+        <div className="flex items-center justify-between px-1 pb-2">
+          <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Chats</h2>
           <button
             type="button"
             onClick={() => setAddOpen(true)}
-            className="text-xs font-semibold text-accent hover:underline"
+            className="rounded-full bg-accent/15 px-3 py-1 text-xs font-semibold text-accent transition hover:bg-accent/25"
           >
-            + Add friend
+            + Add
           </button>
         </div>
 
-        {sortedThreads.length === 0 && (
-          <p className="px-2 py-6 text-center text-xs text-muted">
-            No conversations yet.
-            <br />
-            Tap <span className="font-semibold text-accent">+ Add friend</span> to start.
-          </p>
-        )}
-
-        {sortedThreads.map((t) => (
-          <button
-            key={t.peer_did}
-            type="button"
-            onClick={() => setActivePeerDid(t.peer_did)}
-            className={`flex items-center gap-3 rounded-2xl p-2 text-left transition ${
-              activePeerDid === t.peer_did
-                ? "bg-accent/15 ring-1 ring-accent/30"
-                : "hover:bg-white/5 dark:hover:bg-white/5"
-            }`}
-          >
-            <Avatar name={t.peer_name} avatar={t.peer_avatar} />
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-semibold text-primary">
-                {t.peer_name}
-              </div>
-              <div className="truncate text-xs text-muted">{t.last_message}</div>
+        <div className="flex-1 space-y-1 overflow-y-auto pr-1">
+          {threads.length === 0 ? (
+            <div className="mt-6 rounded-2xl border border-dashed border-black/10 px-3 py-8 text-center text-xs text-muted dark:border-white/10">
+              <p className="font-semibold text-primary">No chats yet</p>
+              <p className="mt-1">
+                Tap <span className="font-semibold text-accent">+ Add</span> to start one
+                with a friend's did:key.
+              </p>
             </div>
-          </button>
-        ))}
+          ) : (
+            threads.map((t) => {
+              const active = activePeerDid === t.peer_did;
+              return (
+                <button
+                  key={t.peer_did}
+                  type="button"
+                  onClick={() => setActivePeerDid(t.peer_did)}
+                  className={`group flex w-full items-center gap-3 rounded-2xl p-2 text-left transition ${
+                    active
+                      ? "bg-accent/15 ring-1 ring-accent/30"
+                      : "hover:bg-black/[0.04] dark:hover:bg-white/[0.04]"
+                  }`}
+                >
+                  <Avatar name={t.peer_name} avatar={t.peer_avatar} did={t.peer_did} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <div className="truncate text-sm font-semibold text-primary">{t.peer_name}</div>
+                      <div className="ml-auto flex-none text-[10px] text-muted">{relativeTime(t.ts)}</div>
+                    </div>
+                    <div className="truncate text-xs text-muted">{t.last_message}</div>
+                  </div>
+                </button>
+              );
+            })
+          )}
+        </div>
 
-        <div className="mt-auto rounded-2xl border border-white/10 bg-white/5 p-3 text-[10px] font-mono text-muted dark:bg-black/20">
-          <div className="mb-1 uppercase tracking-wider">your did:key</div>
-          <div className="break-all">{myDid}</div>
+        <div className="mt-3 rounded-2xl border border-black/5 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.03]">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-muted">Your did:key</span>
+            <button
+              type="button"
+              onClick={handleCopyDid}
+              className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-muted transition hover:bg-black/5 hover:text-primary dark:hover:bg-white/10"
+            >
+              {didCopied ? (<><CheckIcon className="h-3 w-3" /> copied</>) : "copy"}
+            </button>
+          </div>
+          <div className="break-all font-mono text-[10px] text-primary/70">{myDid}</div>
         </div>
       </aside>
 
-      {/* ───────────────────────── Thread ───────────────────────── */}
-      <section className="frosted-card flex min-h-[60vh] flex-col">
+      {/* ────────────────────────── Thread pane ────────────────────────── */}
+      <section className="frosted-card flex h-[72vh] flex-col">
         {!threadData ? (
-          <div className="grid flex-1 place-items-center px-6 text-center text-sm text-muted">
-            Pick a conversation, or add a friend by their did:key.
+          <div className="grid flex-1 place-items-center px-6">
+            <div className="max-w-sm text-center text-sm text-muted">
+              <div className="mb-4 grid place-items-center">
+                <div className="grid h-16 w-16 place-items-center rounded-full bg-accent/15 text-accent">
+                  <PaperPlaneIcon className="h-7 w-7" />
+                </div>
+              </div>
+              <p className="font-semibold text-primary">Pick a conversation</p>
+              <p className="mt-1">
+                Or tap <span className="font-semibold text-accent">+ Add</span> to start one with a friend's <code className="font-mono">did:key</code>.
+              </p>
+            </div>
           </div>
         ) : (
           <>
-            <header className="flex items-center gap-3 border-b border-white/10 px-5 py-4 dark:border-white/10">
-              <Avatar name={threadData.peer.name} avatar={threadData.peer.avatar} />
+            <header className="flex items-center gap-3 border-b border-black/5 px-5 py-4 dark:border-white/10">
+              <Avatar name={threadData.peer.name} avatar={threadData.peer.avatar} did={threadData.peer.did} />
               <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-semibold text-primary">
-                  {threadData.peer.name}
-                </div>
-                <div
-                  className="truncate font-mono text-[10px] text-muted"
-                  title={threadData.peer.did}
-                >
+                <div className="truncate text-sm font-semibold text-primary">{threadData.peer.name}</div>
+                <div className="truncate font-mono text-[10px] text-muted" title={threadData.peer.did}>
                   {DID_TRUNC(threadData.peer.did)}
                 </div>
               </div>
               <span
-                className="flex items-center gap-1 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300"
-                title="Phase 2: local-mode. Phase 3 will add end-to-end signatures."
+                className="flex items-center gap-1.5 rounded-full bg-amber-400/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300"
+                title="Phase 2: server-attested local mode. Phase 3 will add end-to-end Ed25519 signatures."
               >
                 <ShieldCheckIcon className="h-3 w-3" />
                 local
               </span>
             </header>
 
-            <div className="flex-1 space-y-2 overflow-y-auto px-4 py-4">
+            <div className="flex-1 space-y-4 overflow-y-auto px-4 py-5">
               {threadData.messages.length === 0 ? (
-                <p className="mt-8 text-center text-xs text-muted">
-                  No messages yet. Say hi.
-                </p>
+                <div className="mt-8 text-center text-xs text-muted">
+                  <p>No messages yet.</p>
+                  <p className="mt-1 text-primary/70">Say hi — they'll see it within a few seconds.</p>
+                </div>
               ) : (
-                threadData.messages.map((m) => {
-                  const mine = m.sender_did === myDid;
-                  return (
-                    <div
-                      key={m.id}
-                      className={`flex ${mine ? "justify-end" : "justify-start"}`}
-                    >
-                      <div
-                        className={`max-w-[72%] rounded-2xl px-4 py-2 text-sm leading-snug ${
-                          mine
-                            ? "rounded-br-md bg-amber-400/20 text-amber-900 ring-1 ring-amber-400/40 dark:text-amber-100"
-                            : "rounded-bl-md bg-white/70 text-primary ring-1 ring-black/5 dark:bg-white/10 dark:ring-white/10"
-                        }`}
-                      >
-                        <div className="whitespace-pre-wrap break-words">{m.content}</div>
-                        <div className="mt-1 text-right text-[10px] opacity-70">
-                          {new Date(m.ts).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </div>
-                      </div>
+                grouped.map((day, dayIdx) => (
+                  <div key={dayIdx} className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="h-px flex-1 bg-black/5 dark:bg-white/5" />
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">{day.day}</span>
+                      <div className="h-px flex-1 bg-black/5 dark:bg-white/5" />
                     </div>
-                  );
-                })
+                    {day.clusters.map((cluster, clusterIdx) => {
+                      const mine = cluster.sender_did === myDid;
+                      const isLatestCluster = dayIdx === grouped.length - 1 && clusterIdx === day.clusters.length - 1;
+                      return (
+                        <div key={clusterIdx} className={`flex gap-2 ${mine ? "justify-end" : "justify-start"}`}>
+                          {!mine && (
+                            <Avatar
+                              name={threadData.peer.name}
+                              avatar={threadData.peer.avatar}
+                              did={threadData.peer.did}
+                              size="h-7 w-7"
+                              textSize="text-xs"
+                            />
+                          )}
+                          <div className={`flex max-w-[70%] flex-col ${mine ? "items-end" : "items-start"}`}>
+                            {cluster.messages.map((m, mIdx) => {
+                              const isLast = mIdx === cluster.messages.length - 1;
+                              const animate = isLatestCluster && isLast ? "animate-fade-up" : "";
+                              const roundedShape = mine
+                                ? `rounded-2xl ${isLast ? "rounded-br-md" : ""} ${mIdx === 0 ? "" : "rounded-tr-md"}`
+                                : `rounded-2xl ${isLast ? "rounded-bl-md" : ""} ${mIdx === 0 ? "" : "rounded-tl-md"}`;
+                              const isEditing = editingId === m.id;
+                              const isDeleted = !!m.deleted_at;
+                              const canEdit = mine && !isDeleted && (Date.now() - m.ts) < EDIT_WINDOW_MS;
+                              const repliedTo = m.reply_to ? messagesById.get(m.reply_to) : null;
+                              const reactionEntries = Object.entries(m.reactions || {});
+                              const totalReactions = reactionEntries.reduce((a, [, list]) => a + list.length, 0);
+
+                              return (
+                                <div key={m.id} className={`group/msg relative ${animate} mt-0.5 flex flex-col ${mine ? "items-end" : "items-start"}`}>
+                                  {/* Hover toolbar (chat actions) */}
+                                  {!isDeleted && !isEditing && (
+                                    <div
+                                      className={`pointer-events-none absolute top-1 z-10 flex items-center gap-0.5 rounded-full border border-black/10 bg-white/95 px-1 py-1 opacity-0 shadow-md backdrop-blur-md transition group-hover/msg:pointer-events-auto group-hover/msg:opacity-100 dark:border-white/10 dark:bg-neutral-900/95 ${
+                                        mine ? "right-full mr-2" : "left-full ml-2"
+                                      }`}
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={() => setPickerForId(pickerForId === m.id ? null : m.id)}
+                                        title="React"
+                                        className="grid h-7 w-7 place-items-center rounded-full text-base hover:bg-black/5 dark:hover:bg-white/10"
+                                      >
+                                        😊
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleReplyClick(m)}
+                                        title="Reply"
+                                        className="grid h-7 w-7 place-items-center rounded-full text-xs font-bold text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/10"
+                                      >
+                                        ↩
+                                      </button>
+                                      {canEdit && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleEditStart(m)}
+                                          title="Edit"
+                                          className="grid h-7 w-7 place-items-center rounded-full text-xs text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/10"
+                                        >
+                                          ✎
+                                        </button>
+                                      )}
+                                      {mine && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleDelete(m.id)}
+                                          title="Delete"
+                                          className="grid h-7 w-7 place-items-center rounded-full text-muted hover:bg-red-500/10 hover:text-red-500 dark:hover:bg-red-500/20"
+                                        >
+                                          <TrashIcon className="h-3.5 w-3.5" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {pickerForId === m.id && (
+                                    <ReactionPicker
+                                      onPick={(emoji) => handleReact(m.id, emoji)}
+                                      onClose={() => setPickerForId(null)}
+                                    />
+                                  )}
+
+                                  {/* The bubble itself */}
+                                  <div
+                                    className={`relative px-4 py-2 text-sm leading-snug ${roundedShape} ${
+                                      isDeleted
+                                        ? "bg-black/[0.03] italic text-muted ring-1 ring-black/5 dark:bg-white/[0.04] dark:ring-white/10"
+                                        : mine
+                                          ? "bg-amber-400/20 text-amber-900 ring-1 ring-amber-400/40 dark:text-amber-100"
+                                          : "bg-black/[0.04] text-primary ring-1 ring-black/5 dark:bg-white/[0.06] dark:ring-white/10"
+                                    }`}
+                                    title={new Date(m.ts).toLocaleString()}
+                                  >
+                                    {/* Reply context (quoted preview) */}
+                                    {repliedTo && (
+                                      <div className={`mb-2 rounded-md border-l-2 px-2 py-1 text-xs ${
+                                        mine
+                                          ? "border-amber-500/60 bg-amber-500/10 text-amber-900/80 dark:text-amber-100/80"
+                                          : "border-accent/50 bg-black/[0.03] text-muted dark:bg-white/[0.04]"
+                                      }`}>
+                                        <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70">
+                                          {repliedTo.sender_did === myDid ? "you" : (threadData.peer.name || "them")}
+                                        </div>
+                                        <div className="truncate">
+                                          {repliedTo.deleted_at ? <em>deleted message</em> : (repliedTo.content || "")}
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {isEditing ? (
+                                      <div className="flex flex-col gap-2">
+                                        <textarea
+                                          ref={editRef}
+                                          value={editDraft}
+                                          onChange={(e) => setEditDraft(e.target.value)}
+                                          onKeyDown={(e) => {
+                                            if (e.key === "Escape") handleEditCancel();
+                                            if (e.key === "Enter" && !e.shiftKey) {
+                                              e.preventDefault();
+                                              handleEditSave();
+                                            }
+                                          }}
+                                          rows={2}
+                                          className="w-64 resize-none rounded-md bg-white/60 px-2 py-1 text-sm text-primary outline-none ring-1 ring-amber-400 dark:bg-black/40"
+                                        />
+                                        <div className="flex justify-end gap-1">
+                                          <button
+                                            type="button"
+                                            onClick={handleEditCancel}
+                                            className="rounded-full px-3 py-1 text-xs text-muted hover:bg-black/5 dark:hover:bg-white/10"
+                                          >
+                                            cancel
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={handleEditSave}
+                                            className="rounded-full bg-accent px-3 py-1 text-xs font-semibold text-accent-text hover:bg-amber-300"
+                                          >
+                                            save
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="whitespace-pre-wrap break-words">
+                                        {isDeleted ? "message deleted" : m.content}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Reactions row */}
+                                  {totalReactions > 0 && !isDeleted && (
+                                    <div className={`mt-1 flex flex-wrap gap-1 ${mine ? "justify-end" : "justify-start"}`}>
+                                      {reactionEntries.map(([emoji, list]) => {
+                                        const mineReacted = list.includes(myDid);
+                                        return (
+                                          <button
+                                            key={emoji}
+                                            type="button"
+                                            onClick={() => handleReact(m.id, emoji)}
+                                            className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs transition ${
+                                              mineReacted
+                                                ? "bg-amber-400/30 ring-1 ring-amber-400/60"
+                                                : "bg-black/5 ring-1 ring-black/5 hover:bg-black/10 dark:bg-white/[0.06] dark:ring-white/10 dark:hover:bg-white/10"
+                                            }`}
+                                            title={`${list.length} · click to ${mineReacted ? "remove" : "add"}`}
+                                          >
+                                            <span>{emoji}</span>
+                                            <span className="text-[10px] font-semibold opacity-80">{list.length}</span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            <div className="mt-1 flex items-center gap-1.5 px-2 text-[10px] text-muted">
+                              <span>
+                                {new Date(
+                                  cluster.messages[cluster.messages.length - 1].ts
+                                ).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                              </span>
+                              {cluster.messages.some((m) => m.edited_at) && (
+                                <span className="italic opacity-70">· edited</span>
+                              )}
+                              {/* Read receipts: ✓ sent, ✓✓ read by peer (only on mine) */}
+                              {mine && !cluster.messages[cluster.messages.length - 1].deleted_at && (
+                                cluster.messages[cluster.messages.length - 1].read_at ? (
+                                  <span className="text-sky-500 dark:text-sky-400" title="Read">✓✓</span>
+                                ) : (
+                                  <span className="opacity-70" title="Sent">✓</span>
+                                )
+                              )}
+                            </div>
+                          </div>
+                          {mine && (
+                            <Avatar name={myName} did={myDid} size="h-7 w-7" textSize="text-xs" />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))
               )}
               <div ref={threadEndRef} />
             </div>
 
             {error && (
-              <p className="mx-4 mb-2 animate-fade-in text-xs text-red-500 dark:text-red-400">
-                {error}
-              </p>
+              <p className="mx-4 mb-2 animate-fade-in text-xs text-red-500 dark:text-red-400">{error}</p>
+            )}
+
+            {/* Reply context above compose */}
+            {replyingTo && (
+              <div className="mx-3 mb-2 flex items-start gap-2 rounded-xl border-l-2 border-accent bg-accent/10 px-3 py-2">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-accent">
+                    replying to {replyingTo.sender_did === myDid ? "yourself" : (threadData.peer.name || "them")}
+                  </div>
+                  <div className="truncate text-xs text-muted">
+                    {replyingTo.deleted_at ? <em>deleted message</em> : (replyingTo.content || "")}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReplyingTo(null)}
+                  className="grid h-6 w-6 place-items-center rounded-full text-muted hover:bg-black/5 dark:hover:bg-white/10"
+                  aria-label="Cancel reply"
+                >
+                  <CloseIcon className="h-3 w-3" />
+                </button>
+              </div>
             )}
 
             <form
               onSubmit={handleSend}
-              className="flex items-center gap-2 border-t border-white/10 px-3 py-3 dark:border-white/10"
+              className="flex items-end gap-2 border-t border-black/5 px-3 py-3 dark:border-white/10"
             >
-              <input
+              <textarea
+                ref={composeRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                placeholder="Type a message…"
+                onKeyDown={handleKeyDown}
+                placeholder="Type a message…   ↵ to send · Shift+↵ for newline"
                 disabled={sending}
-                className="frosted-input flex-1 text-sm"
+                rows={1}
                 maxLength={2000}
+                className="frosted-input flex-1 resize-none text-sm leading-snug"
+                style={{ minHeight: "40px" }}
               />
+              {draft.length > 1800 && (
+                <span className="text-[10px] text-muted">{2000 - draft.length}</span>
+              )}
               <button
                 type="submit"
                 disabled={sending || !draft.trim()}
                 aria-label="Send"
-                className="grid h-10 w-10 flex-none place-items-center rounded-full bg-accent text-accent-text transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Send (Enter)"
+                className="grid h-10 w-10 flex-none place-items-center rounded-full bg-accent text-accent-text transition hover:bg-amber-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <PaperPlaneIcon className="h-4 w-4" />
               </button>
