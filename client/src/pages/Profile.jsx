@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   followUser,
   getUserById,
@@ -11,6 +11,8 @@ import { useReveal } from "../hooks/useReveal";
 import { CameraIcon, CommentIcon, HeartIcon } from "../components/icons";
 import ProfileEditModal from "../components/ProfileEditModal";
 import QRBadge from "../components/QRBadge";
+import DeleteAccountModal from "../components/DeleteAccountModal";
+import { passkeyAttach, passkeySupported } from "../api/passkey";
 
 const GridTile = ({ post, index }) => {
   const { ref, visible } = useReveal();
@@ -190,6 +192,28 @@ const Profile = () => {
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [avatarError, setAvatarError] = useState(null);
   const avatarInputRef = useRef(null);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyMsg, setPasskeyMsg] = useState(null);
+  const navigate = useNavigate();
+
+  const handleAddPasskey = async () => {
+    if (!profile?.accessToken) return;
+    setPasskeyBusy(true);
+    setPasskeyMsg(null);
+    try {
+      await passkeyAttach(profile.accessToken);
+      setPasskeyMsg({ kind: "ok", text: "Passkey added ✓" });
+      setTimeout(() => setPasskeyMsg(null), 3000);
+    } catch (err) {
+      setPasskeyMsg({
+        kind: "err",
+        text: err.response?.data?.message || err.message || "Could not add passkey.",
+      });
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
 
   useEffect(() => {
     const stored = localStorage.getItem("profile");
@@ -329,12 +353,13 @@ const Profile = () => {
       <div className="mx-auto max-w-md frosted-card animate-fade-up p-8 text-center">
         <h2 className="text-2xl font-bold text-primary">Profile</h2>
         <p className="mt-3 text-muted">Sign in to view your profile.</p>
-        <Link
-          to="/signin"
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent("open-signin"))}
           className="unfrost mt-5 inline-block rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-accent-text"
         >
           Sign in
-        </Link>
+        </button>
       </div>
     );
   }
@@ -452,19 +477,51 @@ const Profile = () => {
           </span>
         </div>
 
-        <div className="mt-5 flex items-center gap-2">
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-6">
           {isSelf ? (
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="unfrost rounded-full border border-surface-border bg-white/5 px-5 py-2 text-sm font-medium text-primary transition hover:bg-white/10"
-            >
-              Edit profile
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="unfrost rounded-full border border-surface-border bg-white/5 px-5 py-2 text-sm font-medium text-primary transition hover:bg-white/10"
+              >
+                Edit profile
+              </button>
+              {passkeySupported() && (
+                <button
+                  type="button"
+                  onClick={handleAddPasskey}
+                  disabled={passkeyBusy}
+                  className="unfrost rounded-full border border-surface-border bg-white/5 px-5 py-2 text-sm font-medium text-primary transition hover:bg-white/10 disabled:opacity-50"
+                >
+                  {passkeyBusy ? "Waiting for passkey..." : "Add a passkey"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setDeleteModalOpen(true)}
+                style={{ backgroundColor: "rgb(239 68 68)" }}
+                className="rounded-full border-2 border-red-600 px-5 py-2 text-sm font-semibold text-white shadow-md shadow-red-900/30 transition hover:!bg-red-600"
+              >
+                Delete account
+              </button>
+            </>
           ) : (
             renderFollowButton()
           )}
         </div>
+
+        {passkeyMsg && (
+          <p
+            className={`mt-3 text-xs ${
+              passkeyMsg.kind === "ok"
+                ? "text-emerald-600 dark:text-emerald-400"
+                : "text-red-500 dark:text-red-400"
+            }`}
+          >
+            {passkeyMsg.text}
+          </p>
+        )}
       </section>
 
       <section className="animate-fade-up space-y-4" style={{ animationDelay: "120ms" }}>
@@ -547,6 +604,18 @@ const Profile = () => {
           token={profile?.accessToken}
           onClose={() => setEditing(false)}
           onSaved={handleSaved}
+        />
+      )}
+
+      {deleteModalOpen && isSelf && (
+        <DeleteAccountModal
+          token={profile?.accessToken}
+          userName={profile?.user?.name}
+          onClose={() => setDeleteModalOpen(false)}
+          onDeleted={() => {
+            localStorage.removeItem("profile");
+            navigate("/");
+          }}
         />
       )}
     </div>

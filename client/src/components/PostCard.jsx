@@ -464,9 +464,13 @@ const PostCard = ({ post, currentUser, token, onChange, onDelete }) => {
         )}
         {!token && (
           <p className="mt-3 text-xs text-muted">
-            <Link to="/signin" className="text-accent hover:underline">
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent("open-signin"))}
+              className="unfrost text-accent hover:underline"
+            >
               Sign in
-            </Link>{" "}
+            </button>{" "}
             to react or comment.
           </p>
         )}

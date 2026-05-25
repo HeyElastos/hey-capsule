@@ -21,7 +21,10 @@ const Posts = () => {
   const isVideo = mode === "video";
 
   useEffect(() => {
-    if (!profile) navigate("/signin");
+    if (!profile) {
+      navigate("/");
+      window.dispatchEvent(new CustomEvent("open-signin"));
+    }
   }, [navigate, profile]);
 
   if (!profile) return null;

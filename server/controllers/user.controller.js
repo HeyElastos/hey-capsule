@@ -6,8 +6,7 @@ const sharp = require("sharp");
 const { readDb, writeDb } = require("../utils/db");
 const { createNotification, removeFollowRequestNotification } = require("../utils/notifications");
 
-const SECRET = process.env.SECRET || "hey-secret";
-const REFRESH_SECRET = process.env.REFRESH_SECRET || "hey-refresh-secret";
+const { SECRET, REFRESH_SECRET } = require("../utils/secrets");
 
 const ensureSocial = (user) => {
   if (!Array.isArray(user.followers)) user.followers = [];
@@ -64,6 +63,9 @@ const signup = async (req, res) => {
     const authKeyHash = hashKey(authKey);
 
     const db = await readDb();
+    if (db.users.some((u) => (u.name || "").toLowerCase() === displayName.toLowerCase())) {
+      return res.status(409).json({ message: "Name already in use" });
+    }
     const user = {
       id: crypto.randomUUID(),
       name: displayName,
@@ -91,7 +93,7 @@ const signup = async (req, res) => {
       accessTokenUpdatedAt: new Date().toISOString(),
     });
   } catch (error) {
-    return res.status(500).json({ message: "Signup failed", error: error.message });
+    return res.status(500).json({ message: "Signup failed" });
   }
 };
 
@@ -119,7 +121,7 @@ const signin = async (req, res) => {
       accessTokenUpdatedAt: new Date().toISOString(),
     });
   } catch (error) {
-    return res.status(500).json({ message: "Signin failed", error: error.message });
+    return res.status(500).json({ message: "Signin failed" });
   }
 };
 
@@ -135,7 +137,7 @@ const me = async (req, res) => {
       createdAt: user.createdAt,
     });
   } catch (error) {
-    return res.status(500).json({ message: "Unable to load profile", error: error.message });
+    return res.status(500).json({ message: "Unable to load profile" });
   }
 };
 
@@ -154,7 +156,7 @@ const getUserById = async (req, res) => {
       relationship: relationship(viewer, user),
     });
   } catch (error) {
-    return res.status(500).json({ message: "Unable to load user", error: error.message });
+    return res.status(500).json({ message: "Unable to load user" });
   }
 };
 
@@ -192,7 +194,7 @@ const requestFollow = async (req, res) => {
     await writeDb(db);
     res.status(200).json({ relationship: "requested" });
   } catch (error) {
-    res.status(500).json({ message: "Unable to follow", error: error.message });
+    res.status(500).json({ message: "Unable to follow" });
   }
 };
 
@@ -217,7 +219,7 @@ const cancelFollowRequest = async (req, res) => {
     await writeDb(db);
     res.status(200).json({ relationship: "none" });
   } catch (error) {
-    res.status(500).json({ message: "Unable to unfollow", error: error.message });
+    res.status(500).json({ message: "Unable to unfollow" });
   }
 };
 
@@ -253,7 +255,7 @@ const acceptFollow = async (req, res) => {
     await writeDb(db);
     res.status(200).json({ relationship: "incoming-accepted" });
   } catch (error) {
-    res.status(500).json({ message: "Unable to accept", error: error.message });
+    res.status(500).json({ message: "Unable to accept" });
   }
 };
 
@@ -276,7 +278,7 @@ const rejectFollow = async (req, res) => {
     await writeDb(db);
     res.status(200).json({ relationship: "none" });
   } catch (error) {
-    res.status(500).json({ message: "Unable to reject", error: error.message });
+    res.status(500).json({ message: "Unable to reject" });
   }
 };
 
@@ -320,7 +322,79 @@ const updateMe = async (req, res) => {
     await writeDb(db);
     return res.status(200).json({ user: publicUser(user) });
   } catch (error) {
-    return res.status(500).json({ message: "Could not update profile", error: error.message });
+    return res.status(500).json({ message: "Could not update profile" });
+  }
+};
+
+const deleteMe = async (req, res) => {
+  try {
+    const db = await readDb();
+    const meId = req.user.id;
+    const user = db.users.find((u) => u.id === meId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    // Delete avatar file
+    if (user.avatar && user.avatar.startsWith("/uploads/avatars/")) {
+      const p = path.join(__dirname, "..", user.avatar);
+      fs.unlink(p).catch(() => {});
+    }
+
+    // Delete all of the user's posts (and their uploaded media files)
+    const myPosts = db.posts.filter((p) => p.userId === meId);
+    for (const post of myPosts) {
+      for (const img of post.images || []) {
+        if (img.url && img.url.startsWith("/uploads/")) {
+          const p = path.join(__dirname, "..", img.url);
+          fs.unlink(p).catch(() => {});
+        }
+      }
+    }
+    db.posts = db.posts.filter((p) => p.userId !== meId);
+
+    // Strip me from other users' posts (reactions, reposts, comments)
+    for (const post of db.posts) {
+      if (post.reactions) {
+        for (const emoji of Object.keys(post.reactions)) {
+          post.reactions[emoji] = (post.reactions[emoji] || []).filter(
+            (id) => id !== meId
+          );
+          if (post.reactions[emoji].length === 0) delete post.reactions[emoji];
+        }
+      }
+      if (Array.isArray(post.reposts)) {
+        post.reposts = post.reposts.filter((r) => r.userId !== meId);
+      }
+      if (Array.isArray(post.comments)) {
+        post.comments = post.comments.filter((c) => c.userId !== meId);
+      }
+    }
+
+    // Strip me from other users' follow lists
+    for (const other of db.users) {
+      if (other.id === meId) continue;
+      ensureSocial(other);
+      other.followers = other.followers.filter((id) => id !== meId);
+      other.following = other.following.filter((id) => id !== meId);
+      other.pendingFollowers = other.pendingFollowers.filter((id) => id !== meId);
+      other.pendingFollowing = other.pendingFollowing.filter((id) => id !== meId);
+    }
+
+    // Remove notifications to or from me
+    if (Array.isArray(db.notifications)) {
+      db.notifications = db.notifications.filter(
+        (n) => n.userId !== meId && n.fromUserId !== meId
+      );
+    }
+
+    // Finally remove the user
+    db.users = db.users.filter((u) => u.id !== meId);
+
+    await writeDb(db);
+    return res.status(200).json({ message: "Account deleted" });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Could not delete account" });
   }
 };
 
@@ -329,6 +403,7 @@ module.exports = {
   signin,
   me,
   updateMe,
+  deleteMe,
   getUserById,
   requestFollow,
   cancelFollowRequest,

@@ -154,7 +154,7 @@ const SearchModal = ({ token, onClose, onChange }) => {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center px-4 animate-fade-in bg-black/35 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-24 animate-fade-in bg-black/35 backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose?.();
       }}

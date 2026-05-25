@@ -18,6 +18,11 @@ export const signIn = async (payload) => {
   return response.data;
 };
 
+export const deleteAccount = async (token) => {
+  const response = await API.delete("/users/me", { headers: authHeaders(token) });
+  return response.data;
+};
+
 export const updateProfile = async ({ name, bio, avatar }, token) => {
   const formData = new FormData();
   if (typeof name === "string") formData.append("name", name);

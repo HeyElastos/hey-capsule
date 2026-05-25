@@ -6,7 +6,11 @@
       "authKeyHash": "dc2c5dd514835625599795b40055c0ddbb4e8bccbf9553d7d25836fe553b2bef",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T10:47:00.862Z"
+      "createdAt": "2026-05-24T10:47:00.862Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "2ab02387-1cd1-4cd4-ba38-52a2a8faf4f0",
@@ -14,7 +18,11 @@
       "authKeyHash": "479fc4ec2a32a64e31e89163fb63931e28be0d3750faaf035a4d90011ec900a0",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T10:47:00.894Z"
+      "createdAt": "2026-05-24T10:47:00.894Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "d60e307f-7679-4d83-b108-48110d07bcb4",
@@ -22,7 +30,11 @@
       "authKeyHash": "49bb685a40aef8e3cfcf4ba20cf478b8f05b99183743a6e4c301f7b136add50c",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T10:49:37.518Z"
+      "createdAt": "2026-05-24T10:49:37.518Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "7743b8ff-2071-4ddd-991f-a05984c64a6b",
@@ -30,7 +42,11 @@
       "authKeyHash": "ad3aa645fd4665437a6c4e63934019ca318b2e3887d842fa3055bbfd7c13310f",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T11:38:21.085Z"
+      "createdAt": "2026-05-24T11:38:21.085Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "73d2adcc-20db-499f-9399-51e084817f42",
@@ -38,7 +54,11 @@
       "authKeyHash": "559a1a92a50c723cba439af65d4f8275dc7e3781d26ebca26fe8100d2f55f91a",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T11:40:33.155Z"
+      "createdAt": "2026-05-24T11:40:33.155Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "0450bd1e-9f06-4f8e-b764-361ed07c045f",
@@ -46,7 +66,11 @@
       "authKeyHash": "02be3027fd922e271126af7437eb9e296c3a89760e7ded5aba86dca62412eb3d",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T11:48:15.869Z"
+      "createdAt": "2026-05-24T11:48:15.869Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "f055fd1b-e1fc-4557-806b-d318b907228a",
@@ -54,7 +78,11 @@
       "authKeyHash": "309d52bfc65db1cbe8dcdb6511c4ec8b7896e005e9d7ce641e84498a5ae243c1",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T12:14:12.552Z"
+      "createdAt": "2026-05-24T12:14:12.552Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "7cc978e2-b708-4a19-93c0-f1fa62c7c778",
@@ -62,7 +90,11 @@
       "authKeyHash": "9d762a61b650c034f2be714bdb8cc8716b9b91e8491a5e7a5c75d1002da38799",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T13:05:24.074Z"
+      "createdAt": "2026-05-24T13:05:24.074Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "ca5c73d9-4ed8-43ab-b351-5943fc98df51",
@@ -70,7 +102,11 @@
       "authKeyHash": "b86c0c2e6799487ec6e600369733214606a9f687299ce41b165af3ca2d0a1ca4",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T15:14:49.367Z"
+      "createdAt": "2026-05-24T15:14:49.367Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "98baad05-461a-4944-98e6-7a7787bac40c",
@@ -78,7 +114,11 @@
       "authKeyHash": "3e8912f4d62b913d9b75c4ff4370f36cc4b6b453cd76eec80e210b6b3148f4ea",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T18:17:21.974Z"
+      "createdAt": "2026-05-24T18:17:21.974Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "d8086662-ee45-49d6-b693-4eb289c0da1a",
@@ -86,7 +126,11 @@
       "authKeyHash": "4669af4d1ef1bf093e3505006672f43bb6f9af22a310ab9385f8f4927071855a",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T18:25:14.226Z"
+      "createdAt": "2026-05-24T18:25:14.226Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "69a5fcda-cdfa-4a79-b29d-5eaebbd06b96",
@@ -94,7 +138,11 @@
       "authKeyHash": "a827fb3e324cc9ea3681a57cbeed10f84efd19c98e67ef6f645fe607ff567b9b",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T18:33:01.485Z"
+      "createdAt": "2026-05-24T18:33:01.485Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "448874ce-723e-4a95-8885-f5f7ed9601f5",
@@ -102,7 +150,11 @@
       "authKeyHash": "c618acf492aa494c422f6f1d5e25ad07b98d454c56391836fc0db40b64e53d4c",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T19:12:53.907Z"
+      "createdAt": "2026-05-24T19:12:53.907Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "237b95af-7a7c-4579-8cc8-b21c7dac4993",
@@ -110,7 +162,11 @@
       "authKeyHash": "163c20f92757c77577ec71b4e37117947fdfaf96bd0f7516b222e4a14b863d46",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T19:26:25.628Z"
+      "createdAt": "2026-05-24T19:26:25.628Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "3bcc1a65-7144-4091-b4e1-6d31d97b1ba8",
@@ -118,7 +174,11 @@
       "authKeyHash": "03f035a7390eba42f3da74f68df2a20373f43daec03ab61025f47c2c3f18b721",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T19:29:33.613Z"
+      "createdAt": "2026-05-24T19:29:33.613Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "6c317041-7647-4634-8a91-79ea55f39145",
@@ -126,16 +186,11 @@
       "authKeyHash": "bcc01cdbbe1b5c4f316ef0f5f4f0386a8afed01ec224204ff6d95093065dd010",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T19:33:13.680Z"
-    },
-    {
-      "id": "505503f5-ec5d-4e50-b1a4-aed03b720c85",
-      "name": "r",
-      "authKeyHash": "1d37d3fc1227083fc55a3dd884de22a4406e7691a310d89fa12a73313a613c06",
-      "role": "general",
-      "avatar": "/uploads/avatars/505503f5-ec5d-4e50-b1a4-aed03b720c85-1779661176165.avif",
-      "createdAt": "2026-05-24T19:33:59.962Z",
-      "bio": ""
+      "createdAt": "2026-05-24T19:33:13.680Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "8adbedf1-dbb2-4179-b2b5-9e9035218eab",
@@ -143,7 +198,11 @@
       "authKeyHash": "806e28900db7f72f3f2dc12d165c75c49af3819076c6252bd65ba598097ab41e",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T19:44:30.663Z"
+      "createdAt": "2026-05-24T19:44:30.663Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "256a3646-df4a-4176-9246-10460d19ac99",
@@ -151,7 +210,11 @@
       "authKeyHash": "5b9f77c581b8d647a412e5a1e532352cc8f4b1fee7dd5ead6fe8544b26148ab8",
       "role": "general",
       "avatar": "",
-      "createdAt": "2026-05-24T19:44:37.866Z"
+      "createdAt": "2026-05-24T19:44:37.866Z",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": []
     },
     {
       "id": "ed79fdf1-22a5-4664-9018-54466c704c9c",
@@ -178,6 +241,111 @@
       "pendingFollowers": [],
       "pendingFollowing": [],
       "createdAt": "2026-05-24T22:55:23.122Z"
+    },
+    {
+      "id": "8822a539-134c-4098-9598-1f15964b2274",
+      "name": "wef",
+      "authKeyHash": "7a3cafb4f76b81db27823a0c74e61bdbd15917e2324ad88f27cce48d970dcc73",
+      "role": "general",
+      "avatar": "",
+      "bio": "",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": [],
+      "createdAt": "2026-05-24T23:16:02.598Z"
+    },
+    {
+      "id": "7d458718-c589-43d0-820a-f3e909033f6f",
+      "name": "PasskeyUser1779664688779",
+      "bio": "",
+      "avatar": "",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": [],
+      "credentials": [
+        {
+          "id": "vEiBwyxKZFzFaPJft4Lxas7YATRQVEW8MGW-JCky_A0",
+          "publicKey": "pAEBAycgBiFYIJWilZTSy4NRf80uJNp1W7zLXgcPnKQTzq4cvJQ4xvX2",
+          "counter": 1,
+          "transports": [
+            "usb"
+          ],
+          "createdAt": "2026-05-24T23:18:14.286Z"
+        }
+      ],
+      "createdAt": "2026-05-24T23:18:14.288Z"
+    },
+    {
+      "id": "3c05199c-4b4b-498c-95b5-a3273627b35f",
+      "name": "PasskeyUser1779664765482",
+      "bio": "",
+      "avatar": "",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": [],
+      "credentials": [
+        {
+          "id": "rK2HfcVkPJe9xp9afCMWcxFca99R8DNkd4CYO3bkrtw",
+          "publicKey": "pAEBAycgBiFYIHDyFy3Wam3ugm5wELBTfGIcO1IENNa222A91QNm182S",
+          "counter": 1,
+          "transports": [
+            "usb"
+          ],
+          "createdAt": "2026-05-24T23:19:32.004Z"
+        }
+      ],
+      "createdAt": "2026-05-24T23:19:32.006Z"
+    },
+    {
+      "id": "5ddb1225-23f4-4424-90fb-27a0c0886dac",
+      "name": "PasskeyUser1779664804137",
+      "bio": "",
+      "avatar": "",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": [],
+      "credentials": [
+        {
+          "id": "zmxDWQVuP3oTDEZsfK3DV-Mhzt7tTXcpd1x8F6AQl2A",
+          "publicKey": "pAEBAycgBiFYIBedQYI-eeKNsXjjuPOhjuFBEFnXs4mXorTDH4SXisWy",
+          "counter": 2,
+          "transports": [
+            "usb"
+          ],
+          "createdAt": "2026-05-24T23:20:09.611Z"
+        }
+      ],
+      "createdAt": "2026-05-24T23:20:09.612Z"
+    },
+    {
+      "id": "eb5551e2-b279-4dff-a85d-b3fcb975d87a",
+      "name": "ReuseProbe1779665501787",
+      "authKeyHash": "ff2e72ab6b8b5b5abdf3bab2127663b30ff17f97949622f6ec941dc3c23f6b47",
+      "role": "general",
+      "avatar": "",
+      "bio": "",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": [],
+      "createdAt": "2026-05-24T23:31:41.924Z"
+    },
+    {
+      "id": "c899b384-29cd-41cd-a219-18a3b78bdb6e",
+      "name": "REUSEPROBEALT1779665501928",
+      "authKeyHash": "b0a6f4e4a33ba2d6e81c919852481a6b5d96c0184ea5fa6fff04b7e10e521624",
+      "role": "general",
+      "avatar": "",
+      "bio": "",
+      "followers": [],
+      "following": [],
+      "pendingFollowers": [],
+      "pendingFollowing": [],
+      "createdAt": "2026-05-24T23:31:41.946Z"
     }
   ],
   "posts": [
@@ -231,87 +399,6 @@
       "lastRepostAt": null,
       "comments": [],
       "createdAt": "2026-05-24T18:36:31.187Z"
-    },
-    {
-      "id": "efb7b752-40ff-45a7-a80f-01d397398626",
-      "userId": "505503f5-ec5d-4e50-b1a4-aed03b720c85",
-      "userName": "r",
-      "caption": "test",
-      "hashtags": [],
-      "images": [
-        {
-          "url": "/uploads/cc5b29b7-bfea-45ea-9523-b0fb1162e0e7.avif",
-          "type": "photo",
-          "width": 1533,
-          "height": 1420
-        }
-      ],
-      "reactions": {},
-      "reposts": [],
-      "lastRepostAt": null,
-      "comments": [],
-      "createdAt": "2026-05-24T20:49:02.914Z"
-    },
-    {
-      "id": "c8f704a4-51de-46f5-9b1e-73c558feacf5",
-      "userId": "505503f5-ec5d-4e50-b1a4-aed03b720c85",
-      "userName": "r",
-      "caption": "",
-      "hashtags": [],
-      "images": [
-        {
-          "url": "/uploads/e9c33a39-54d4-4084-83e9-ab4c82254154.avif",
-          "type": "photo",
-          "width": 1533,
-          "height": 1420
-        }
-      ],
-      "reactions": {},
-      "reposts": [],
-      "lastRepostAt": null,
-      "comments": [],
-      "createdAt": "2026-05-24T20:54:47.214Z"
-    },
-    {
-      "id": "82af3833-93f1-4607-afee-875ea99ed191",
-      "userId": "505503f5-ec5d-4e50-b1a4-aed03b720c85",
-      "userName": "r",
-      "userAvatar": "/uploads/avatars/505503f5-ec5d-4e50-b1a4-aed03b720c85-1779654386689.avif",
-      "caption": "no more info needed",
-      "hashtags": [],
-      "images": [
-        {
-          "url": "/uploads/2e95fb62-1007-489b-92a1-a0410a6f6020.avif",
-          "type": "photo",
-          "width": 1533,
-          "height": 1420
-        },
-        {
-          "url": "/uploads/20a11122-daa1-4372-b4ac-b6fa5d041d2d.avif",
-          "type": "photo",
-          "width": 1533,
-          "height": 1420
-        },
-        {
-          "url": "/uploads/375d5468-18cc-4339-81f9-bcf8d70004a3.avif",
-          "type": "photo",
-          "width": 1533,
-          "height": 1420
-        }
-      ],
-      "reactions": {},
-      "reposts": [],
-      "lastRepostAt": null,
-      "comments": [
-        {
-          "id": "058c1e02-e565-46a5-b4c8-0706d64a9825",
-          "userId": "505503f5-ec5d-4e50-b1a4-aed03b720c85",
-          "userName": "r",
-          "text": "✨🎉",
-          "createdAt": "2026-05-24T21:47:40.377Z"
-        }
-      ],
-      "createdAt": "2026-05-24T21:02:23.483Z"
     }
   ],
   "notifications": []

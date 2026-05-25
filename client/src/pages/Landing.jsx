@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { signUp } from "../api/auth";
+import { passkeySignup, passkeySupported } from "../api/passkey";
 import { copyToClipboard } from "../utils/clipboard";
 
 const FloatingScene = () => (
@@ -98,16 +99,21 @@ const FloatingScene = () => (
     </svg>
 
     {/* Square outline */}
-    <svg
-      className="float-shape shape-c text-emerald-700/40 dark:text-emerald-300/60"
+    <div
+      className="float-shape shape-c"
       style={{ top: "62%", right: "8%", width: 60, height: 60, animationDelay: "0.7s" }}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
     >
-      <rect x="3" y="3" width="18" height="18" rx="3" />
-    </svg>
+      <svg
+        className="square-tick text-emerald-700/40 dark:text-emerald-300/60"
+        style={{ width: "100%", height: "100%" }}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.25"
+      >
+        <rect x="3" y="3" width="18" height="18" rx="3" />
+      </svg>
+    </div>
 
     {/* Wavy line */}
     <svg
@@ -119,7 +125,21 @@ const FloatingScene = () => (
       strokeWidth="1.5"
       strokeLinecap="round"
     >
-      <path d="M2 15 Q15 2, 28 15 T54 15 T80 15 T98 15" />
+      <path d="M2 15 Q15 2, 28 15 T54 15 T80 15 T98 15">
+        <animate
+          attributeName="d"
+          values="
+            M2 15 Q15 2, 28 15 T54 15 T80 15 T98 15;
+            M2 15 Q15 28, 28 15 T54 15 T80 15 T98 15;
+            M2 15 Q15 2, 28 15 T54 15 T80 15 T98 15
+          "
+          dur="6s"
+          repeatCount="indefinite"
+          calcMode="spline"
+          keyTimes="0; 0.5; 1"
+          keySplines="0.42 0 0.58 1; 0.42 0 0.58 1"
+        />
+      </path>
     </svg>
   </div>
 );
@@ -206,6 +226,32 @@ const Landing = () => {
   const [error, setError] = useState(null);
   const [generatedKey, setGeneratedKey] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const canUsePasskey = passkeySupported();
+
+  const handlePasskeySignup = async () => {
+    setError(null);
+    if (!name.trim()) {
+      setError("Pick a nickname first.");
+      return;
+    }
+    setPasskeyBusy(true);
+    try {
+      const data = await passkeySignup(name.trim());
+      const profile = {
+        user: data.user,
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken,
+      };
+      localStorage.setItem("profile", JSON.stringify(profile));
+      navigate("/");
+      window.location.reload();
+    } catch (err) {
+      setError(err.response?.data?.message || err.message || "Passkey sign-up failed.");
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -315,6 +361,21 @@ const Landing = () => {
             <p className="mt-3 animate-fade-in text-sm text-red-400">{error}</p>
           )}
 
+          {canUsePasskey && (
+            <button
+              type="button"
+              onClick={handlePasskeySignup}
+              disabled={passkeyBusy || loading || !name.trim()}
+              className="unfrost mt-4 inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/5 px-5 py-2 text-xs font-medium text-primary transition hover:bg-white/10 disabled:opacity-50 animate-fade-in"
+              style={{ animationDelay: "1.9s" }}
+            >
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-current">
+                <path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5Zm-3 8V7a3 3 0 0 1 6 0v3H9Z" />
+              </svg>
+              {passkeyBusy ? "Waiting for passkey..." : "Sign up with a passkey instead"}
+            </button>
+          )}
+
           <p
             className="mt-6 text-xs text-muted animate-fade-in"
             style={{ animationDelay: "2s" }}
@@ -322,7 +383,7 @@ const Landing = () => {
             Already have a key?{" "}
             <button
               type="button"
-              onClick={() => navigate("/signin")}
+              onClick={() => window.dispatchEvent(new CustomEvent("open-signin"))}
               className="unfrost text-accent transition hover:underline"
             >
               Sign in

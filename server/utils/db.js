@@ -1,6 +1,10 @@
 const fs = require("fs/promises");
 const path = require("path");
+const { Mutex } = require("async-mutex");
+
 const dbPath = path.join(__dirname, "../data/db.json");
+const tmpPath = `${dbPath}.tmp`;
+const writeLock = new Mutex();
 
 const readDb = async () => {
   try {
@@ -8,17 +12,22 @@ const readDb = async () => {
     const data = JSON.parse(file);
     if (!Array.isArray(data.users)) data.users = [];
     if (!Array.isArray(data.posts)) data.posts = [];
+    if (!Array.isArray(data.notifications)) data.notifications = [];
     return data;
   } catch (error) {
-    const initial = { users: [], posts: [] };
+    const initial = { users: [], posts: [], notifications: [] };
     await writeDb(initial);
     return initial;
   }
 };
 
-const writeDb = async (data) => {
-  await fs.mkdir(path.dirname(dbPath), { recursive: true });
-  await fs.writeFile(dbPath, JSON.stringify(data, null, 2), "utf8");
-};
+// Atomic + serialized: writes go to db.json.tmp then rename. Mutex prevents
+// interleaved read-modify-write races between concurrent requests.
+const writeDb = async (data) =>
+  writeLock.runExclusive(async () => {
+    await fs.mkdir(path.dirname(dbPath), { recursive: true });
+    await fs.writeFile(tmpPath, JSON.stringify(data, null, 2), "utf8");
+    await fs.rename(tmpPath, dbPath);
+  });
 
 module.exports = { readDb, writeDb };

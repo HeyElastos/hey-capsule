@@ -4,6 +4,23 @@ const { createNotification } = require("../utils/notifications");
 const sharp = require("sharp");
 const fs = require("fs/promises");
 const path = require("path");
+const fileType = require("file-type");
+
+// Magic-byte → safe extension. Filename is never trusted from the client.
+const VIDEO_EXT_BY_MIME = {
+  "video/mp4": ".mp4",
+  "video/quicktime": ".mov",
+  "video/webm": ".webm",
+};
+const IMAGE_MIMES_OK = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/avif",
+  "image/heic",
+  "image/heif",
+  "image/gif",
+]);
 
 const canSeePost = (post, viewerId) => {
   if (!viewerId) return false;
@@ -64,19 +81,27 @@ const processImage = async (file, uploadsDir) => {
   return { url: `/uploads/${fileName}`, type: "photo", width, height };
 };
 
-const processVideo = async (file, uploadsDir) => {
-  const ext = (path.extname(file.originalname) || ".mp4").toLowerCase();
+const processVideo = async (file, uploadsDir, detectedMime) => {
+  const ext = VIDEO_EXT_BY_MIME[detectedMime];
+  if (!ext) throw new Error("Unsupported video type");
   const fileName = `${randomUUID()}${ext}`;
   const outputPath = path.join(uploadsDir, fileName);
   await fs.writeFile(outputPath, file.buffer);
-  return { url: `/uploads/${fileName}`, type: "video", mime: file.mimetype };
+  return { url: `/uploads/${fileName}`, type: "video", mime: detectedMime };
 };
 
-const processFile = (file, uploadsDir) => {
-  if (file.mimetype && file.mimetype.startsWith("video/")) {
-    return processVideo(file, uploadsDir);
+// Verify the real type from magic bytes, not from client-supplied mimetype/filename.
+const processFile = async (file, uploadsDir) => {
+  const detected = await fileType.fromBuffer(file.buffer);
+  if (!detected) throw new Error("Could not detect file type");
+  const realMime = detected.mime;
+  if (VIDEO_EXT_BY_MIME[realMime]) {
+    return processVideo(file, uploadsDir, realMime);
   }
-  return processImage(file, uploadsDir);
+  if (IMAGE_MIMES_OK.has(realMime)) {
+    return processImage(file, uploadsDir);
+  }
+  throw new Error(`Disallowed file type: ${realMime}`);
 };
 
 const createPost = async (req, res) => {
@@ -118,7 +143,7 @@ const createPost = async (req, res) => {
 
     res.status(201).json({ message: "Post created successfully", post: newPost });
   } catch (error) {
-    res.status(500).json({ message: "Unable to create post", error: error.message });
+    res.status(500).json({ message: "Unable to create post" });
   }
 };
 

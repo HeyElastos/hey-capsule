@@ -538,6 +538,15 @@ textarea {
   75% { transform: translate(-14px, -6px) rotate(20deg); }
 }
 
+@keyframes square-tick {
+  to { transform: rotate(360deg); }
+}
+
+.square-tick {
+  animation: square-tick 48s linear infinite;
+  transform-origin: 50% 50%;
+}
+
 @keyframes glow-pulse {
   0%, 100% { opacity: 0.55; transform: scale(1); }
   50% { opacity: 0.85; transform: scale(1.08); }

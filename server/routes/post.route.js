@@ -14,9 +14,26 @@ const {
 const requireAuth = require("../middlewares/auth");
 const optionalAuth = require("../middlewares/optionalAuth");
 
+const ALLOWED_MIME = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/avif",
+  "image/heic",
+  "image/heif",
+  "image/gif",
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
+]);
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024, files: 12 },
+  limits: { fileSize: 25 * 1024 * 1024, files: 12 },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME.has(file.mimetype)) cb(null, true);
+    else cb(new Error("Unsupported file type"));
+  },
 });
 
 const router = express.Router();

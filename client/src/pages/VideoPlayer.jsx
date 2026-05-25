@@ -279,9 +279,13 @@ const VideoPlayer = () => {
           </form>
         ) : (
           <p className="text-sm text-muted">
-            <Link to="/signin" className="text-accent hover:underline">
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent("open-signin"))}
+              className="unfrost text-accent hover:underline"
+            >
               Sign in
-            </Link>{" "}
+            </button>{" "}
             to comment.
           </p>
         )}

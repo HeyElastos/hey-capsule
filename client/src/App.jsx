@@ -10,12 +10,12 @@ import {
 import Home from "./pages/Home";
 import Profile from "./pages/Profile";
 import Videos from "./pages/Clips";
-import SignIn from "./pages/SignIn";
 import SignUp from "./pages/SignUp";
 import Posts from "./pages/Posts";
 import PostDetail from "./pages/PostDetail";
 import VideoPlayer from "./pages/VideoPlayer";
 import FloatingDock from "./components/FloatingDock";
+import SignInModal from "./components/SignInModal";
 import {
   CameraIcon,
   VideoIcon,
@@ -32,6 +32,13 @@ const App = () => {
   const prevPathRef = useRef(location.pathname);
   const [direction, setDirection] = useState(null);
   const [mode, setMode] = useState(() => localStorage.getItem("mode") || "photo");
+  const [signinOpen, setSigninOpen] = useState(false);
+
+  useEffect(() => {
+    const openHandler = () => setSigninOpen(true);
+    window.addEventListener("open-signin", openHandler);
+    return () => window.removeEventListener("open-signin", openHandler);
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
@@ -60,6 +67,7 @@ const App = () => {
   const handleLogout = () => {
     localStorage.removeItem("profile");
     navigate("/");
+    window.location.reload();
   };
 
   const isOnProfile = location.pathname.startsWith("/profile");
@@ -131,7 +139,6 @@ const App = () => {
             <Route path="/profile/:userId" element={<Profile />} />
             <Route path="/videos" element={<Videos />} />
             <Route path="/clips" element={<Navigate to="/videos" replace />} />
-            <Route path="/signin" element={<SignIn />} />
             <Route path="/signup" element={<SignUp />} />
             <Route path="/posts" element={<Posts />} />
             <Route path="/p/:id" element={<PostDetail />} />
@@ -140,6 +147,16 @@ const App = () => {
           </Routes>
         </div>
       </main>
+
+      {signinOpen && (
+        <SignInModal
+          onClose={() => setSigninOpen(false)}
+          onSuccess={() => {
+            setSigninOpen(false);
+            navigate("/");
+          }}
+        />
+      )}
     </div>
   );
 };
