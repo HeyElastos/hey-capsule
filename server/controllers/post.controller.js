@@ -1,28 +1,10 @@
 const { randomUUID } = require("crypto");
 const { readDb, writeDb } = require("../utils/db");
 const { createNotification } = require("../utils/notifications");
-const { ensureBrowserSafeVideo } = require("../utils/video");
-const sharp = require("sharp");
 const fs = require("fs/promises");
 const path = require("path");
-const fileType = require("file-type");
 const env = require("../utils/env");
-
-// Magic-byte → safe extension. Filename is never trusted from the client.
-const VIDEO_EXT_BY_MIME = {
-  "video/mp4": ".mp4",
-  "video/quicktime": ".mov",
-  "video/webm": ".webm",
-};
-const IMAGE_MIMES_OK = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/avif",
-  "image/heic",
-  "image/heif",
-  "image/gif",
-]);
+const { processFile } = require("../utils/media");
 
 const canSeePost = (post, viewerId) => {
   if (!viewerId) return false;
@@ -68,42 +50,6 @@ const extractHashtags = (text) => {
     tags.add(match[1].toLowerCase());
   }
   return [...tags];
-};
-
-const processImage = async (file, uploadsDir) => {
-  const fileName = `${randomUUID()}.avif`;
-  const outputPath = path.join(uploadsDir, fileName);
-
-  const { width, height } = await sharp(file.buffer)
-    .rotate()
-    .resize({ width: 1600, withoutEnlargement: true })
-    .avif({ quality: 65 })
-    .toFile(outputPath);
-
-  return { url: `/uploads/${fileName}`, type: "photo", width, height };
-};
-
-const processVideo = async (file, uploadsDir, detectedMime) => {
-  const ext = VIDEO_EXT_BY_MIME[detectedMime];
-  if (!ext) throw new Error("Unsupported video type");
-  // Transcode HEVC/VP9/etc → H.264 + AAC with faststart. iPhone HEIF/HEVC
-  // uploads otherwise wouldn't play in Chrome/Firefox on Linux.
-  const { url } = await ensureBrowserSafeVideo(file.buffer, uploadsDir, ext);
-  return { url, type: "video", mime: "video/mp4" };
-};
-
-// Verify the real type from magic bytes, not from client-supplied mimetype/filename.
-const processFile = async (file, uploadsDir) => {
-  const detected = await fileType.fromBuffer(file.buffer);
-  if (!detected) throw new Error("Could not detect file type");
-  const realMime = detected.mime;
-  if (VIDEO_EXT_BY_MIME[realMime]) {
-    return processVideo(file, uploadsDir, realMime);
-  }
-  if (IMAGE_MIMES_OK.has(realMime)) {
-    return processImage(file, uploadsDir);
-  }
-  throw new Error(`Disallowed file type: ${realMime}`);
 };
 
 const createPost = async (req, res) => {

@@ -198,3 +198,15 @@ export const ShieldCheckIcon = (props) => (
     <path d="m9 12 2 2 4-4" />
   </Icon>
 );
+
+export const PaperclipIcon = (props) => (
+  <Icon {...props}>
+    <path d="M20 11.5 12.5 19a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7-7" />
+  </Icon>
+);
+
+export const PlayIcon = (props) => (
+  <Icon {...props}>
+    <path d="M8 5.5v13l11-6.5Z" fill="currentColor" stroke="none" />
+  </Icon>
+);

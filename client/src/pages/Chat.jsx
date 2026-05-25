@@ -8,18 +8,23 @@ import {
   deleteMessage,
   reactToMessage,
   markThreadRead,
+  uploadAttachments,
 } from "../api/chat";
 import AddFriendModal from "../components/AddFriendModal";
 import {
   CheckIcon,
   CloseIcon,
+  PaperclipIcon,
   PaperPlaneIcon,
+  PlayIcon,
   ShieldCheckIcon,
   TrashIcon,
 } from "../components/icons";
 
 const POLL_MS = 4000;
 const EDIT_WINDOW_MS = 15 * 60 * 1000;
+const MAX_ATTACHMENTS = 4;
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_REACTIONS = ["❤️", "🔥", "😂", "😮", "😢", "👏", "💯", "✨"];
 const DID_TRUNC = (s) => (s ? `${s.slice(0, 12)}…${s.slice(-6)}` : "");
 
@@ -110,6 +115,41 @@ const groupMessages = (messages) => {
   return days;
 };
 
+// One thumbnail in a message's attachment grid. Click image → open in a new
+// tab (full-size viewer is a separate epic). Videos play inline.
+const AttachmentTile = ({ attachment }) => {
+  const aspect = attachment.width && attachment.height
+    ? `${attachment.width} / ${attachment.height}`
+    : "1 / 1";
+  if (attachment.type === "video") {
+    return (
+      <video
+        src={attachment.url}
+        controls
+        preload="metadata"
+        className="h-full w-full bg-black object-cover"
+        style={{ aspectRatio: aspect }}
+      />
+    );
+  }
+  return (
+    <a
+      href={attachment.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block h-full w-full"
+      style={{ aspectRatio: aspect }}
+    >
+      <img
+        src={attachment.url}
+        alt=""
+        loading="lazy"
+        className="h-full w-full object-cover transition hover:scale-[1.02]"
+      />
+    </a>
+  );
+};
+
 // Reaction picker — opens on click of the smile button in the hover toolbar.
 const ReactionPicker = ({ onPick, onClose }) => {
   const ref = useRef(null);
@@ -153,6 +193,8 @@ const Chat = () => {
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState("");
   const [pickerForId, setPickerForId] = useState(null);
+  const [pendingFiles, setPendingFiles] = useState([]); // File[] selected, not yet uploaded
+  const [uploadProgress, setUploadProgress] = useState(0); // 0-100 during upload
   const [sending, setSending] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [error, setError] = useState(null);
@@ -161,7 +203,18 @@ const Chat = () => {
   const threadEndRef = useRef(null);
   const composeRef = useRef(null);
   const editRef = useRef(null);
+  const fileInputRef = useRef(null);
   const lastMessageCountRef = useRef(0);
+
+  // Object URLs created for pendingFiles previews. Revoked when files change
+  // or component unmounts to avoid memory leaks.
+  const filePreviewUrls = useMemo(
+    () => pendingFiles.map((f) => ({ file: f, url: URL.createObjectURL(f) })),
+    [pendingFiles]
+  );
+  useEffect(() => {
+    return () => filePreviewUrls.forEach((p) => URL.revokeObjectURL(p.url));
+  }, [filePreviewUrls]);
 
   // Quick lookup of any message in the current thread (for reply previews).
   const messagesById = useMemo(() => {
@@ -246,15 +299,24 @@ const Chat = () => {
 
   const handleSend = useCallback(async (e) => {
     e?.preventDefault?.();
-    if (!activePeerDid || !draft.trim() || sending) return;
+    if (!activePeerDid || sending) return;
+    const text = draft.trim();
+    const hasAttachments = pendingFiles.length > 0;
+    if (!text && !hasAttachments) return;
     setSending(true);
     setError(null);
-    const text = draft.trim();
     const replyTargetId = replyingTo?.id || null;
+    const filesToUpload = pendingFiles;
     setDraft("");
     setReplyingTo(null);
+    setPendingFiles([]);
+    setUploadProgress(0);
     try {
-      const newMsg = await sendMessage(token, activePeerDid, text, replyTargetId);
+      let attachments = [];
+      if (hasAttachments) {
+        attachments = await uploadAttachments(token, filesToUpload, setUploadProgress);
+      }
+      const newMsg = await sendMessage(token, activePeerDid, text, replyTargetId, attachments);
       setThreadData((prev) => prev
         ? { ...prev, messages: [...prev.messages, newMsg] }
         : prev);
@@ -262,11 +324,13 @@ const Chat = () => {
     } catch (err) {
       setError(err.response?.data?.message || "Failed to send");
       setDraft(text);
+      setPendingFiles(filesToUpload);
       if (replyTargetId) setReplyingTo(replyingTo);
     } finally {
       setSending(false);
+      setUploadProgress(0);
     }
-  }, [activePeerDid, draft, replyingTo, sending, token, refreshThreads]);
+  }, [activePeerDid, draft, pendingFiles, replyingTo, sending, token, refreshThreads]);
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -276,6 +340,33 @@ const Chat = () => {
     if (e.key === "Escape" && replyingTo) {
       setReplyingTo(null);
     }
+  };
+
+  const handlePickFiles = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFilesChosen = (e) => {
+    const chosen = Array.from(e.target.files || []);
+    e.target.value = ""; // reset so the same file can be re-picked after removal
+    if (chosen.length === 0) return;
+    const tooBig = chosen.find((f) => f.size > MAX_FILE_BYTES);
+    if (tooBig) {
+      setError(`"${tooBig.name}" is over 25 MB`);
+      return;
+    }
+    setPendingFiles((prev) => {
+      const merged = [...prev, ...chosen];
+      if (merged.length > MAX_ATTACHMENTS) {
+        setError(`Max ${MAX_ATTACHMENTS} attachments per message`);
+        return merged.slice(0, MAX_ATTACHMENTS);
+      }
+      return merged;
+    });
+  };
+
+  const handleRemovePendingFile = (idx) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const handleAdded = (peer) => {
@@ -632,9 +723,28 @@ const Chat = () => {
                                         </div>
                                       </div>
                                     ) : (
-                                      <div className="whitespace-pre-wrap break-words">
-                                        {isDeleted ? "message deleted" : m.content}
-                                      </div>
+                                      <>
+                                        {/* Attachments grid: 1 = full, 2 = side-by-side, 3-4 = 2x2 */}
+                                        {!isDeleted && m.attachments && m.attachments.length > 0 && (
+                                          <div
+                                            className={`mb-2 grid gap-1 overflow-hidden rounded-lg ${
+                                              m.attachments.length === 1
+                                                ? "grid-cols-1"
+                                                : "grid-cols-2"
+                                            }`}
+                                            style={{ maxWidth: m.attachments.length === 1 ? 320 : 280 }}
+                                          >
+                                            {m.attachments.map((a, ai) => (
+                                              <AttachmentTile key={ai} attachment={a} />
+                                            ))}
+                                          </div>
+                                        )}
+                                        {(isDeleted || m.content) && (
+                                          <div className="whitespace-pre-wrap break-words">
+                                            {isDeleted ? "message deleted" : m.content}
+                                          </div>
+                                        )}
+                                      </>
                                     )}
                                   </div>
 
@@ -700,6 +810,42 @@ const Chat = () => {
               <p className="mx-4 mb-2 animate-fade-in text-xs text-red-500 dark:text-red-400">{error}</p>
             )}
 
+            {/* Pending attachments preview row */}
+            {pendingFiles.length > 0 && (
+              <div className="mx-3 mb-2 flex flex-wrap gap-2 rounded-xl border border-black/5 bg-black/[0.02] p-2 dark:border-white/10 dark:bg-white/[0.03]">
+                {filePreviewUrls.map((p, idx) => {
+                  const isVideo = p.file.type.startsWith("video/");
+                  return (
+                    <div
+                      key={idx}
+                      className="group/preview relative h-16 w-16 overflow-hidden rounded-lg ring-1 ring-black/10 dark:ring-white/10"
+                    >
+                      {isVideo ? (
+                        <div className="grid h-full w-full place-items-center bg-black text-white">
+                          <PlayIcon className="h-6 w-6" />
+                        </div>
+                      ) : (
+                        <img src={p.url} alt="" className="h-full w-full object-cover" />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleRemovePendingFile(idx)}
+                        className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/70 text-white opacity-0 transition group-hover/preview:opacity-100"
+                        aria-label="Remove"
+                      >
+                        <CloseIcon className="h-3 w-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+                {sending && uploadProgress > 0 && (
+                  <div className="ml-auto self-center text-xs text-muted">
+                    uploading… {uploadProgress}%
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Reply context above compose */}
             {replyingTo && (
               <div className="mx-3 mb-2 flex items-start gap-2 rounded-xl border-l-2 border-accent bg-accent/10 px-3 py-2">
@@ -726,6 +872,24 @@ const Chat = () => {
               onSubmit={handleSend}
               className="flex items-end gap-2 border-t border-black/5 px-3 py-3 dark:border-white/10"
             >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,video/mp4,video/quicktime,video/webm"
+                multiple
+                onChange={handleFilesChosen}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={handlePickFiles}
+                disabled={sending || pendingFiles.length >= MAX_ATTACHMENTS}
+                aria-label="Attach photo or video"
+                title="Attach (up to 4)"
+                className="grid h-10 w-10 flex-none place-items-center rounded-full text-muted transition hover:bg-black/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-white/10"
+              >
+                <PaperclipIcon className="h-5 w-5" />
+              </button>
               <textarea
                 ref={composeRef}
                 value={draft}
@@ -743,7 +907,7 @@ const Chat = () => {
               )}
               <button
                 type="submit"
-                disabled={sending || !draft.trim()}
+                disabled={sending || (!draft.trim() && pendingFiles.length === 0)}
                 aria-label="Send"
                 title="Send (Enter)"
                 className="grid h-10 w-10 flex-none place-items-center rounded-full bg-accent text-accent-text transition hover:bg-amber-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"

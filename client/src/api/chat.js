@@ -19,15 +19,28 @@ export const getThread = async (token, peerDid, opts = {}) => {
   return data;
 };
 
-export const sendMessage = async (token, peerDid, content, replyTo = null) => {
+export const sendMessage = async (token, peerDid, content, replyTo = null, attachments = []) => {
   const body = { content };
   if (replyTo) body.reply_to = replyTo;
+  if (attachments && attachments.length) body.attachments = attachments;
   const { data } = await API.post(
     `/chat/threads/${encodeURIComponent(peerDid)}/messages`,
     body,
     { headers: auth(token) }
   );
   return data.message;
+};
+
+export const uploadAttachments = async (token, files, onProgress) => {
+  const form = new FormData();
+  for (const f of files) form.append("media", f);
+  const { data } = await API.post("/chat/attachments", form, {
+    headers: { ...auth(token), "Content-Type": "multipart/form-data" },
+    onUploadProgress: (e) => {
+      if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
+    },
+  });
+  return data.attachments || [];
 };
 
 export const editMessage = async (token, messageId, content) => {

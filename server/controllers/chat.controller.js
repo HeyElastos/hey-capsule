@@ -14,9 +14,13 @@
 //   POST   /chat/follow                           → add a peer by did:key
 
 const crypto = require("crypto");
+const fs = require("fs/promises");
 const { readDb, writeDb } = require("../utils/db");
+const env = require("../utils/env");
+const { processFile } = require("../utils/media");
 
 const MAX_CONTENT_LEN = 2000;
+const MAX_ATTACHMENTS_PER_MESSAGE = 4;
 const PAGE_LIMIT = 100;
 const EDIT_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_REACTIONS = new Set(["❤️", "🔥", "😂", "😮", "😢", "👏", "💯", "✨"]);
@@ -42,10 +46,74 @@ const toPublicMessage = (m) => ({
   signature: m.signature || null,
   reply_to: m.replyTo || null,
   reactions: m.reactions || {},
+  attachments: m.deletedAt ? [] : (m.attachments || []),
   read_at: m.readAt || null,
   edited_at: m.editedAt || null,
   deleted_at: m.deletedAt || null,
 });
+
+// POST /chat/attachments — accepts up to MAX_ATTACHMENTS_PER_MESSAGE files
+// via multer (memory storage), runs each through the shared media pipeline
+// (magic-byte check + sharp/ffmpeg transcoding), returns { attachments: [...] }
+// for the client to attach to a subsequent sendMessage call.
+//
+// Decoupling upload from send lets the client show real previews
+// (post-transcode dimensions) and lets the user remove attachments before
+// finalizing the message.
+const uploadAttachments = async (req, res) => {
+  try {
+    const db = await readDb();
+    const me = db.users.find((u) => u.id === req.user.id);
+    if (!me?.didKey) {
+      return res.status(409).json({ message: "Identity not ready" });
+    }
+    const files = req.files || [];
+    if (files.length === 0) {
+      return res.status(400).json({ message: "No files uploaded" });
+    }
+    if (files.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+      return res.status(400).json({
+        message: `Max ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message`,
+      });
+    }
+
+    const uploadsDir = env.UPLOADS_DIR;
+    await fs.mkdir(uploadsDir, { recursive: true });
+    const attachments = await Promise.all(
+      files.map((f) => processFile(f, uploadsDir))
+    );
+    return res.status(201).json({ attachments });
+  } catch (e) {
+    if (e?.message?.startsWith("Disallowed file type")) {
+      return res.status(415).json({ message: e.message });
+    }
+    return res.status(500).json({ message: "Upload failed" });
+  }
+};
+
+// Validate a client-supplied attachments array against the post-upload shape.
+// We trust the URLs from the prior uploadAttachments response because those
+// files live in our own /uploads dir; we just defensively validate shape so
+// a malicious client can't stuff arbitrary metadata into the message.
+const sanitizeAttachments = (input) => {
+  if (!Array.isArray(input)) return [];
+  return input
+    .slice(0, MAX_ATTACHMENTS_PER_MESSAGE)
+    .map((a) => {
+      if (!a || typeof a !== "object") return null;
+      if (typeof a.url !== "string" || !a.url.startsWith("/uploads/")) return null;
+      if (a.type !== "photo" && a.type !== "video") return null;
+      const out = { url: a.url, type: a.type };
+      if (a.type === "photo") {
+        if (Number.isInteger(a.width) && a.width > 0) out.width = a.width;
+        if (Number.isInteger(a.height) && a.height > 0) out.height = a.height;
+      } else {
+        out.mime = "video/mp4";
+      }
+      return out;
+    })
+    .filter(Boolean);
+};
 
 const findMessage = (db, id) => db.chatMessages.find((m) => m.id === id);
 
@@ -70,7 +138,15 @@ const listThreads = async (req, res) => {
       const peerDid = m.senderDid === myDid ? m.recipientDid : m.senderDid;
       const existing = threadMap.get(peerDid);
       if (!existing || existing.ts < m.ts) {
-        threadMap.set(peerDid, { peerDid, lastMessage: m.content, ts: m.ts });
+        let preview = m.content;
+        if (m.deletedAt) {
+          preview = "(message deleted)";
+        } else if (!preview && Array.isArray(m.attachments) && m.attachments.length > 0) {
+          const a = m.attachments[0];
+          preview = a.type === "video" ? "📹 Video" : "📷 Photo";
+          if (m.attachments.length > 1) preview += ` (+${m.attachments.length - 1})`;
+        }
+        threadMap.set(peerDid, { peerDid, lastMessage: preview || "", ts: m.ts });
       }
     }
 
@@ -153,7 +229,10 @@ const sendMessage = async (req, res) => {
     }
 
     const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
-    if (!content) return res.status(400).json({ message: "Message can't be empty" });
+    const attachments = sanitizeAttachments(req.body?.attachments);
+    if (!content && attachments.length === 0) {
+      return res.status(400).json({ message: "Message can't be empty" });
+    }
     if (content.length > MAX_CONTENT_LEN) {
       return res.status(413).json({ message: `Message exceeds ${MAX_CONTENT_LEN} chars` });
     }
@@ -177,6 +256,7 @@ const sendMessage = async (req, res) => {
       signature: null, // Phase 3: filled by client-side signer
       replyTo,
       reactions: {},
+      attachments,
       readAt: null,
       editedAt: null,
       deletedAt: null,
@@ -366,4 +446,5 @@ module.exports = {
   reactToMessage,
   markThreadRead,
   followPeer,
+  uploadAttachments,
 };
