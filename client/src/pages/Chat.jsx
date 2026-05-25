@@ -13,7 +13,9 @@ import {
   listRooms,
   getRoom,
   sendRoomMessage,
+  pollInbound,
 } from "../api/chat";
+import { isCapsuleMode } from "../lib/mode";
 import AddFriendModal from "../components/AddFriendModal";
 import CreateRoomModal from "../components/CreateRoomModal";
 import ProfilePopover from "../components/ProfilePopover";
@@ -320,6 +322,21 @@ const Chat = () => {
   }, [token]);
 
   useEffect(() => { refreshThreads(); refreshRooms(); }, [refreshThreads, refreshRooms]);
+
+  // Capsule mode: poll Carrier for inbound gossip events on every subscribed
+  // topic, verify signatures, write into localhost storage. The existing
+  // refreshThreads / refreshThread polls then pick them up from local cache.
+  // Disabled in server mode (the Node backend handles federation server-side).
+  useEffect(() => {
+    if (!isCapsuleMode() || !token) return;
+    let cancelled = false;
+    const tick = async () => {
+      try { await pollInbound(); } catch { /* ignore single failures */ }
+    };
+    tick();
+    const id = setInterval(() => { if (!cancelled) tick(); }, POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [token]);
 
   useEffect(() => {
     if (!token) return;
