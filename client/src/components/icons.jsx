@@ -210,3 +210,17 @@ export const PlayIcon = (props) => (
     <path d="M8 5.5v13l11-6.5Z" fill="currentColor" stroke="none" />
   </Icon>
 );
+
+export const MicIcon = (props) => (
+  <Icon {...props}>
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M6 11a6 6 0 0 0 12 0" />
+    <path d="M12 17v4M9 21h6" />
+  </Icon>
+);
+
+export const StopIcon = (props) => (
+  <Icon {...props}>
+    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" />
+  </Icon>
+);

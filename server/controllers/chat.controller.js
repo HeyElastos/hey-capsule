@@ -17,7 +17,7 @@ const crypto = require("crypto");
 const fs = require("fs/promises");
 const { readDb, writeDb } = require("../utils/db");
 const env = require("../utils/env");
-const { processFile } = require("../utils/media");
+const { processFile, processAudio } = require("../utils/media");
 
 const MAX_CONTENT_LEN = 2000;
 const MAX_ATTACHMENTS_PER_MESSAGE = 4;
@@ -112,6 +112,43 @@ const uploadAttachments = async (req, res) => {
   }
 };
 
+// POST /chat/voice — upload a single voice note (MediaRecorder output).
+// Multipart field "audio", mime declared via the file's mimetype. Returns
+// { attachment: { url, type: "voice", mime, duration_ms? } }
+const uploadVoice = async (req, res) => {
+  try {
+    const db = await readDb();
+    const me = db.users.find((u) => u.id === req.user.id);
+    if (!me?.didKey) {
+      return res.status(409).json({ message: "Identity not ready" });
+    }
+    const file = (req.files && req.files[0]) || req.file;
+    if (!file) return res.status(400).json({ message: "No audio uploaded" });
+    if (file.size > 8 * 1024 * 1024) {
+      return res.status(413).json({ message: "Voice note exceeds 8 MB" });
+    }
+
+    const uploadsDir = env.UPLOADS_DIR;
+    await fs.mkdir(uploadsDir, { recursive: true });
+    const att = await processAudio(file, uploadsDir, file.mimetype);
+
+    // Client-reported duration in ms. Optional; we don't validate strictly,
+    // just store if it's a positive integer.
+    const declaredDuration = Number(req.body?.duration_ms);
+    if (Number.isFinite(declaredDuration) && declaredDuration > 0) {
+      att.duration_ms = Math.min(Math.floor(declaredDuration), 10 * 60 * 1000);
+    }
+
+    return res.status(201).json({ attachment: att });
+  } catch (e) {
+    if (e?.message?.startsWith("Disallowed audio type") ||
+        e?.message?.startsWith("Audio container")) {
+      return res.status(415).json({ message: e.message });
+    }
+    return res.status(500).json({ message: "Voice upload failed" });
+  }
+};
+
 // Validate a client-supplied attachments array against the post-upload shape.
 // We trust the URLs from the prior uploadAttachments response because those
 // files live in our own /uploads dir; we just defensively validate shape so
@@ -123,13 +160,18 @@ const sanitizeAttachments = (input) => {
     .map((a) => {
       if (!a || typeof a !== "object") return null;
       if (typeof a.url !== "string" || !a.url.startsWith("/uploads/")) return null;
-      if (a.type !== "photo" && a.type !== "video") return null;
+      if (!["photo", "video", "voice"].includes(a.type)) return null;
       const out = { url: a.url, type: a.type };
       if (a.type === "photo") {
         if (Number.isInteger(a.width) && a.width > 0) out.width = a.width;
         if (Number.isInteger(a.height) && a.height > 0) out.height = a.height;
-      } else {
+      } else if (a.type === "video") {
         out.mime = "video/mp4";
+      } else if (a.type === "voice") {
+        if (typeof a.mime === "string") out.mime = a.mime;
+        if (Number.isInteger(a.duration_ms) && a.duration_ms > 0) {
+          out.duration_ms = a.duration_ms;
+        }
       }
       return out;
     })
@@ -162,7 +204,7 @@ const listThreads = async (req, res) => {
           preview = "(message deleted)";
         } else if (!preview && Array.isArray(m.attachments) && m.attachments.length > 0) {
           const a = m.attachments[0];
-          preview = a.type === "video" ? "📹 Video" : "📷 Photo";
+          preview = a.type === "video" ? "📹 Video" : a.type === "voice" ? "🎤 Voice" : "📷 Photo";
           if (m.attachments.length > 1) preview += ` (+${m.attachments.length - 1})`;
         }
         threadMap.set(peerDid, { peerDid, lastMessage: preview || "", ts: m.ts });
@@ -482,7 +524,7 @@ const listRooms = async (req, res) => {
         if (m.deletedAt) preview = "(message deleted)";
         else if (!preview && Array.isArray(m.attachments) && m.attachments.length > 0) {
           const a = m.attachments[0];
-          preview = a.type === "video" ? "📹 Video" : "📷 Photo";
+          preview = a.type === "video" ? "📹 Video" : a.type === "voice" ? "🎤 Voice" : "📷 Photo";
         }
         lastByRoom.set(m.roomId, { ts: m.ts, preview: preview || "", sender: m.senderDid });
       }
@@ -714,6 +756,7 @@ module.exports = {
   markThreadRead,
   followPeer,
   uploadAttachments,
+  uploadVoice,
   createRoom,
   listRooms,
   getRoom,

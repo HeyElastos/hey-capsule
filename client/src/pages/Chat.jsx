@@ -9,6 +9,7 @@ import {
   reactToMessage,
   markThreadRead,
   uploadAttachments,
+  uploadVoice,
   listRooms,
   getRoom,
   sendRoomMessage,
@@ -18,10 +19,12 @@ import CreateRoomModal from "../components/CreateRoomModal";
 import ProfilePopover from "../components/ProfilePopover";
 import {
   CloseIcon,
+  MicIcon,
   PaperclipIcon,
   PaperPlaneIcon,
   PlayIcon,
   ShieldCheckIcon,
+  StopIcon,
   TrashIcon,
 } from "../components/icons";
 
@@ -119,9 +122,35 @@ const groupMessages = (messages) => {
   return days;
 };
 
+const formatDuration = (ms) => {
+  const total = Math.round(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+};
+
 // One thumbnail in a message's attachment grid. Click image → open in a new
-// tab (full-size viewer is a separate epic). Videos play inline.
+// tab (full-size viewer is a separate epic). Videos play inline. Voice
+// messages render as a horizontal player chip.
 const AttachmentTile = ({ attachment }) => {
+  if (attachment.type === "voice") {
+    return (
+      <div className="col-span-2 flex items-center gap-2 rounded-xl bg-black/[0.04] px-3 py-2 ring-1 ring-black/5 dark:bg-white/[0.06] dark:ring-white/10">
+        <audio
+          src={attachment.url}
+          controls
+          preload="metadata"
+          className="h-8 flex-1 [&::-webkit-media-controls-panel]:bg-transparent"
+          style={{ maxWidth: 240 }}
+        />
+        {attachment.duration_ms ? (
+          <span className="text-[10px] font-mono text-muted">
+            {formatDuration(attachment.duration_ms)}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
   const aspect = attachment.width && attachment.height
     ? `${attachment.width} / ${attachment.height}`
     : "1 / 1";
@@ -207,6 +236,10 @@ const Chat = () => {
   const [pickerForId, setPickerForId] = useState(null);
   const [pendingFiles, setPendingFiles] = useState([]); // File[] selected, not yet uploaded
   const [uploadProgress, setUploadProgress] = useState(0); // 0-100 during upload
+  // Voice-recording state: "idle" → "recording" → "preview" → (send or cancel)
+  const [recState, setRecState] = useState("idle");
+  const [recDuration, setRecDuration] = useState(0); // ms
+  const [voiceBlob, setVoiceBlob] = useState(null);
   const [sending, setSending] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [error, setError] = useState(null);
@@ -217,6 +250,11 @@ const Chat = () => {
   const fileInputRef = useRef(null);
   const profileButtonRef = useRef(null);
   const lastMessageCountRef = useRef(0);
+  const mediaRecorderRef = useRef(null);
+  const recordingChunksRef = useRef([]);
+  const recordingStartRef = useRef(0);
+  const recordingTimerRef = useRef(null);
+  const voicePreviewUrlRef = useRef(null);
 
   // Object URLs created for pendingFiles previews. Revoked when files change
   // or component unmounts to avoid memory leaks.
@@ -338,6 +376,140 @@ const Chat = () => {
       editRef.current.setSelectionRange(len, len);
     }
   }, [editingId]);
+
+  // ─── Voice recording ─────────────────────────────────────────────
+  const cleanupRecording = () => {
+    clearInterval(recordingTimerRef.current);
+    recordingTimerRef.current = null;
+    const recorder = mediaRecorderRef.current;
+    if (recorder) {
+      try {
+        recorder.stream?.getTracks().forEach((t) => t.stop());
+      } catch { /* already stopped */ }
+    }
+    mediaRecorderRef.current = null;
+    recordingChunksRef.current = [];
+  };
+
+  const cleanupPreview = () => {
+    if (voicePreviewUrlRef.current) {
+      URL.revokeObjectURL(voicePreviewUrlRef.current);
+      voicePreviewUrlRef.current = null;
+    }
+    setVoiceBlob(null);
+    setRecDuration(0);
+  };
+
+  // Stop any in-flight recording / preview on unmount.
+  useEffect(() => () => {
+    cleanupRecording();
+    cleanupPreview();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleStartRecording = async () => {
+    if (recState !== "idle" || sending) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError("Voice recording isn't supported in this browser.");
+      return;
+    }
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : (MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "");
+      const recorder = mime
+        ? new MediaRecorder(stream, { mimeType: mime })
+        : new MediaRecorder(stream);
+
+      recordingChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordingChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        const chunks = recordingChunksRef.current;
+        const type = recorder.mimeType?.split(";")[0] || "audio/webm";
+        const blob = new Blob(chunks, { type });
+        const duration = Date.now() - recordingStartRef.current;
+        cleanupRecording();
+        if (blob.size < 200) {
+          // Too short to be a real recording — bail to idle.
+          setRecState("idle");
+          return;
+        }
+        voicePreviewUrlRef.current = URL.createObjectURL(blob);
+        setVoiceBlob(blob);
+        setRecDuration(duration);
+        setRecState("preview");
+      };
+
+      mediaRecorderRef.current = recorder;
+      recordingStartRef.current = Date.now();
+      recorder.start();
+      setRecState("recording");
+      setRecDuration(0);
+      recordingTimerRef.current = setInterval(() => {
+        const elapsed = Date.now() - recordingStartRef.current;
+        setRecDuration(elapsed);
+        if (elapsed > 5 * 60_000) handleStopRecording(); // 5 min hard cap
+      }, 100);
+    } catch (e) {
+      setError(e?.name === "NotAllowedError"
+        ? "Microphone access denied."
+        : "Couldn't start recording.");
+      cleanupRecording();
+      setRecState("idle");
+    }
+  };
+
+  const handleStopRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
+      setRecState("idle");
+      return;
+    }
+    if (recorder.state !== "inactive") {
+      recorder.stop();
+    } else {
+      cleanupRecording();
+      setRecState("idle");
+    }
+  };
+
+  const handleCancelRecording = () => {
+    cleanupRecording();
+    cleanupPreview();
+    setRecState("idle");
+  };
+
+  const handleSendVoice = useCallback(async () => {
+    if (!voiceBlob || !(activePeerDid || activeRoomId) || sending) return;
+    setSending(true);
+    setError(null);
+    const blob = voiceBlob;
+    const duration = recDuration;
+    cleanupPreview();
+    setRecState("idle");
+    try {
+      const attachment = await uploadVoice(token, blob, duration, setUploadProgress);
+      let newMsg;
+      if (activePeerDid) {
+        newMsg = await sendMessage(token, activePeerDid, "", null, [attachment]);
+        setThreadData((prev) => prev ? { ...prev, messages: [...prev.messages, newMsg] } : prev);
+        refreshThreads();
+      } else {
+        newMsg = await sendRoomMessage(token, activeRoomId, "", null, [attachment]);
+        setRoomData((prev) => prev ? { ...prev, messages: [...prev.messages, newMsg] } : prev);
+        refreshRooms();
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to send voice");
+    } finally {
+      setSending(false);
+      setUploadProgress(0);
+    }
+  }, [voiceBlob, recDuration, activePeerDid, activeRoomId, sending, token, refreshThreads, refreshRooms]);
 
   const handleSend = useCallback(async (e) => {
     e?.preventDefault?.();
@@ -1034,53 +1206,128 @@ const Chat = () => {
               </div>
             )}
 
-            <form
-              onSubmit={handleSend}
-              className="flex items-end gap-2 border-t border-black/5 px-3 py-3 dark:border-white/10"
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*,video/mp4,video/quicktime,video/webm"
-                multiple
-                onChange={handleFilesChosen}
-                className="hidden"
-              />
-              <button
-                type="button"
-                onClick={handlePickFiles}
-                disabled={sending || pendingFiles.length >= MAX_ATTACHMENTS}
-                aria-label="Attach photo or video"
-                title="Attach (up to 4)"
-                className="grid h-10 w-10 flex-none place-items-center rounded-full text-muted transition hover:bg-black/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-white/10"
+            {recState === "recording" ? (
+              <div className="flex items-center gap-3 border-t border-black/5 px-3 py-3 dark:border-white/10">
+                <button
+                  type="button"
+                  onClick={handleCancelRecording}
+                  aria-label="Cancel recording"
+                  title="Cancel"
+                  className="grid h-10 w-10 flex-none place-items-center rounded-full text-muted transition hover:bg-black/5 hover:text-red-500 dark:hover:bg-white/10"
+                >
+                  <CloseIcon className="h-4 w-4" />
+                </button>
+                <div className="flex flex-1 items-center gap-2 rounded-full bg-red-500/10 px-4 py-2 ring-1 ring-red-500/30">
+                  <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-500" />
+                  <span className="text-xs font-semibold text-red-700 dark:text-red-300">Recording</span>
+                  <span className="ml-auto font-mono text-xs text-red-700 dark:text-red-300">
+                    {formatDuration(recDuration)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleStopRecording}
+                  aria-label="Stop recording"
+                  title="Stop"
+                  className="grid h-10 w-10 flex-none place-items-center rounded-full bg-red-500 text-white transition hover:bg-red-600 active:scale-95"
+                >
+                  <StopIcon className="h-4 w-4" />
+                </button>
+              </div>
+            ) : recState === "preview" ? (
+              <div className="flex items-center gap-2 border-t border-black/5 px-3 py-3 dark:border-white/10">
+                <button
+                  type="button"
+                  onClick={handleCancelRecording}
+                  aria-label="Discard"
+                  title="Discard"
+                  className="grid h-10 w-10 flex-none place-items-center rounded-full text-muted transition hover:bg-red-500/10 hover:text-red-500"
+                >
+                  <TrashIcon className="h-4 w-4" />
+                </button>
+                <div className="flex flex-1 items-center gap-2 rounded-full bg-black/[0.04] px-3 py-1.5 ring-1 ring-black/5 dark:bg-white/[0.06] dark:ring-white/10">
+                  {voicePreviewUrlRef.current && (
+                    <audio
+                      src={voicePreviewUrlRef.current}
+                      controls
+                      className="h-8 flex-1"
+                    />
+                  )}
+                  <span className="font-mono text-[10px] text-muted">{formatDuration(recDuration)}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSendVoice}
+                  disabled={sending}
+                  aria-label="Send voice"
+                  title="Send voice"
+                  className="grid h-10 w-10 flex-none place-items-center rounded-full bg-accent text-accent-text transition hover:bg-amber-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <PaperPlaneIcon className="h-4 w-4" />
+                </button>
+              </div>
+            ) : (
+              <form
+                onSubmit={handleSend}
+                className="flex items-end gap-2 border-t border-black/5 px-3 py-3 dark:border-white/10"
               >
-                <PaperclipIcon className="h-5 w-5" />
-              </button>
-              <textarea
-                ref={composeRef}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Type a message…   ↵ to send · Shift+↵ for newline"
-                disabled={sending}
-                rows={1}
-                maxLength={2000}
-                className="frosted-input flex-1 resize-none text-sm leading-snug"
-                style={{ minHeight: "40px" }}
-              />
-              {draft.length > 1800 && (
-                <span className="text-[10px] text-muted">{2000 - draft.length}</span>
-              )}
-              <button
-                type="submit"
-                disabled={sending || (!draft.trim() && pendingFiles.length === 0)}
-                aria-label="Send"
-                title="Send (Enter)"
-                className="grid h-10 w-10 flex-none place-items-center rounded-full bg-accent text-accent-text transition hover:bg-amber-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <PaperPlaneIcon className="h-4 w-4" />
-              </button>
-            </form>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/mp4,video/quicktime,video/webm"
+                  multiple
+                  onChange={handleFilesChosen}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={handlePickFiles}
+                  disabled={sending || pendingFiles.length >= MAX_ATTACHMENTS}
+                  aria-label="Attach photo or video"
+                  title="Attach (up to 4)"
+                  className="grid h-10 w-10 flex-none place-items-center rounded-full text-muted transition hover:bg-black/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-white/10"
+                >
+                  <PaperclipIcon className="h-5 w-5" />
+                </button>
+                <textarea
+                  ref={composeRef}
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Type a message…   ↵ to send · Shift+↵ for newline"
+                  disabled={sending}
+                  rows={1}
+                  maxLength={2000}
+                  className="frosted-input flex-1 resize-none text-sm leading-snug"
+                  style={{ minHeight: "40px" }}
+                />
+                {draft.length > 1800 && (
+                  <span className="text-[10px] text-muted">{2000 - draft.length}</span>
+                )}
+                {draft.trim() || pendingFiles.length > 0 ? (
+                  <button
+                    type="submit"
+                    disabled={sending}
+                    aria-label="Send"
+                    title="Send (Enter)"
+                    className="grid h-10 w-10 flex-none place-items-center rounded-full bg-accent text-accent-text transition hover:bg-amber-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <PaperPlaneIcon className="h-4 w-4" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStartRecording}
+                    disabled={sending}
+                    aria-label="Record voice"
+                    title="Hold to record (tap to start)"
+                    className="grid h-10 w-10 flex-none place-items-center rounded-full text-muted transition hover:bg-accent/15 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-accent/15"
+                  >
+                    <MicIcon className="h-5 w-5" />
+                  </button>
+                )}
+              </form>
+            )}
           </>
         )}
       </section>

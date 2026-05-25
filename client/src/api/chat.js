@@ -43,6 +43,22 @@ export const uploadAttachments = async (token, files, onProgress) => {
   return data.attachments || [];
 };
 
+export const uploadVoice = async (token, blob, durationMs, onProgress) => {
+  const form = new FormData();
+  // The blob's type is what MediaRecorder gave us ("audio/webm;codecs=opus"
+  // typically). Multer strips the codec parameter server-side.
+  const file = new File([blob], "voice.webm", { type: blob.type || "audio/webm" });
+  form.append("audio", file);
+  if (Number.isFinite(durationMs)) form.append("duration_ms", String(Math.round(durationMs)));
+  const { data } = await API.post("/chat/voice", form, {
+    headers: { ...auth(token), "Content-Type": "multipart/form-data" },
+    onUploadProgress: (e) => {
+      if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
+    },
+  });
+  return data.attachment;
+};
+
 export const editMessage = async (token, messageId, content) => {
   const { data } = await API.patch(
     `/chat/messages/${encodeURIComponent(messageId)}`,
