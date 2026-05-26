@@ -1,13 +1,13 @@
-# Hey
+# Hey Social
 
 A photo and video social app on Elastos. Image-first, key-based identity,
 no email, no algorithm.
 
 ## What it is
 
-Hey lets people share photos and short videos with friends, react with any
-emoji, comment, reply, and repost. You sign in with a private key (or a
-hardware passkey — Yubikey, Nitrokey, Touch ID, Windows Hello). No email,
+Hey Social lets people share photos and short videos with friends, react
+with any emoji, comment, reply, and repost. You sign in with a private key
+(or a hardware passkey — Yubikey, Nitrokey, Touch ID, Windows Hello). No email,
 no password, no ads.
 
 ## Highlights
