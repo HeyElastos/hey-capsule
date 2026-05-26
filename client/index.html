@@ -3,6 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Content-Security-Policy — defense-in-depth against XSS injection.
+      Allowances explained:
+        script-src 'unsafe-inline' 'unsafe-eval'  — Vite HMR + module preload
+          require these. Production capsule build still benefits because
+          'self' blocks attacker-injected <script src="https://evil/...">.
+        style-src 'unsafe-inline'  — Tailwind utility classes inject
+          inline styles for arbitrary-value rules and dark-mode toggles.
+        connect-src 'self'  — every runtime call (/api/localhost, /api/
+          provider) is same-origin. No external endpoints in capsule mode.
+        img-src + media-src 'self' data: blob:  — avatars, post images,
+          videos, voice messages all served from /uploads or built as
+          ObjectURLs in the browser from IPFS-fetched bytes.
+        object-src 'none' + base-uri 'self' + form-action 'self'  —
+          shut down obscure injection vectors (Flash/PDF, base-href
+          tricks, form exfiltration to attacker origin).
+      Note: frame-ancestors is intentionally omitted because CSP via
+      <meta> ignores it (spec). The Elastos Runtime gateway should add
+      `X-Frame-Options: SAMEORIGIN` at the HTTP layer instead.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self';" />
+    <link rel="icon" type="image/svg+xml" href="/hey-icon.svg" />
+    <link rel="apple-touch-icon" href="/hey-icon.svg" />
     <title>Hey</title>
   </head>
   <body>

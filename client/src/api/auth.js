@@ -8,6 +8,7 @@ import { isCapsuleMode } from "../lib/mode";
 import { storage as runtimeStorage, peer, ipfs } from "../lib/runtime";
 import { setSession, clearSession, getKeypair, getDidKey } from "../lib/session";
 import { createSignedEvent, verifySignedEvent } from "../lib/events";
+import { readSharedIdentity, writeSharedIdentity } from "../lib/shell";
 
 const API = axios.create({
   baseURL: "/api",
@@ -22,6 +23,13 @@ let refreshing = null;
 API.interceptors.response.use(
   (r) => r,
   async (error) => {
+    // Defense in depth: in capsule mode there is no Hey backend, no
+    // JWT tokens, and no /api/users/refresh route. Every public auth
+    // call already short-circuits to the capsule branch BEFORE hitting
+    // axios, so this interceptor cannot fire — but if some future code
+    // path slips through, we don't want it falling back to a backend
+    // URL. Reject immediately.
+    if (isCapsuleMode()) return Promise.reject(error);
     const original = error.config || {};
     const status = error.response?.status;
     if (
@@ -110,12 +118,41 @@ const capsuleSignUp = async ({ name }) => {
   if (!name || !name.trim()) {
     throw new Error("Display name is required");
   }
+
+  // 1. If the desktop shell (hey-home) already minted an identity for
+  //    this node, adopt it instead of creating a second one. The user
+  //    will be prompted to enter their recovery key on the sign-in
+  //    screen the first time they need to sign something.
+  const shared = await readSharedIdentity();
+  if (shared && shared.didKey && shared.recoveryKeyHash) {
+    const existingLocal = await runtimeStorage.readJson(PROFILE_FILE);
+    if (!existingLocal) {
+      const user = newUserRecord({
+        name: shared.name || name.trim(),
+        didKey: shared.didKey,
+        authKeyHash: shared.recoveryKeyHash,
+      });
+      user.createdAt = shared.createdAt || user.createdAt;
+      await runtimeStorage.writeJson(PROFILE_FILE, user);
+    }
+    const err = new Error(
+      "Welcome back — this node already has your identity. Sign in with your recovery key."
+    );
+    err.code = "ADOPT_SHARED";
+    err.response = { data: { message: err.message } };
+    throw err;
+  }
+
+  // 2. Local profile (Hey's own) already exists — sign in path.
   const existing = await runtimeStorage.readJson(PROFILE_FILE);
   if (existing) {
     const err = new Error("A profile already exists on this node — sign in instead.");
     err.response = { data: { message: err.message } };
     throw err;
   }
+
+  // 3. True first-run signup — mint a fresh identity AND publish it to
+  //    the shared identity path so hey-home picks it up on next boot.
   const authKey = generateAuthKey();
   const { didKey } = expandKeypair(authKey);
   const authKeyHash = await hashAuthKey(authKey);
@@ -123,9 +160,21 @@ const capsuleSignUp = async ({ name }) => {
   const user = newUserRecord({ name, didKey, authKeyHash });
   await runtimeStorage.writeJson(PROFILE_FILE, user);
 
-  // Cache the seed so subsequent signed events (chat, posts) can sign
-  // without re-prompting for the authKey.
-  setSession(authKey);
+  // Import the seed as a non-extractable Web Crypto key and persist
+  // the handle in IndexedDB. setSession zeroes the seed in place after
+  // import — see lib/session.js + lib/keystore.js.
+  await setSession(authKey);
+
+  // Publish to shared identity contract so any other capsule (shell,
+  // companion apps) on this node uses the same identity.
+  await writeSharedIdentity({
+    name,
+    didKey,
+    recoveryKeyHash: authKeyHash,
+    passkeys: [],
+    createdAt: new Date().toISOString(),
+    createdBy: "hey",
+  });
 
   return {
     message: "User created successfully",
@@ -158,7 +207,7 @@ const capsuleSignIn = async ({ authKey }) => {
     user.didKey = expandKeypair(trimmed).didKey;
     await runtimeStorage.writeJson(PROFILE_FILE, user);
   }
-  setSession(trimmed);
+  await setSession(trimmed);
   return {
     message: "Signed in successfully",
     user: publicUserShape(user),
@@ -186,7 +235,7 @@ export const signIn = async (payload) => {
 
 const capsuleDeleteAccount = async () => {
   await runtimeStorage.remove(PROFILE_FILE);
-  clearSession();
+  await clearSession();
   return { message: "Account deleted" };
 };
 
@@ -201,8 +250,12 @@ const capsuleUpdateProfile = async ({ name, bio, avatar }) => {
   // store it on IPFS, save the CID on the user record. The browser fetches
   // it via the runtime's content gateway.
   if (avatar) {
-    const { ipfs } = await import("../lib/runtime");
-    const resp = await ipfs.addBytes(avatar, avatar.name || "avatar", true);
+    const { ipfs, transcoder } = await import("../lib/runtime");
+    // Avatars get aggressively shrunk + EXIF-stripped before IPFS.
+    const { blob: optimized } = await transcoder.processForUpload(avatar, {
+      maxDim: 256, quality: 90, targetFormat: "webp", stripMetadata: true,
+    });
+    const resp = await ipfs.addBytes(optimized, avatar.name || "avatar", true);
     const cid = resp?.data?.cid || resp?.cid;
     if (!cid) throw new Error("IPFS add_bytes returned no CID");
     user.avatar = `elastos://${cid}`;
@@ -277,7 +330,7 @@ export const getUserById = async (id, token) => {
 const signEventAndPublish = async (topic, type, payload) => {
   const kp = getKeypair();
   if (!kp) throw new Error("Not signed in");
-  const event = createSignedEvent({ type, payload }, kp);
+  const event = await createSignedEvent({ type, payload }, kp);
   await peer.publish({
     topic,
     message: JSON.stringify(event),
@@ -370,9 +423,15 @@ const readFeedIndex = async () =>
   (await runtimeStorage.readJson("posts/feed.json")) || [];
 const writeFeedIndex = (idx) => runtimeStorage.writeJson("posts/feed.json", idx);
 
-// File → IPFS CID, with type detected from MIME.
+// File → IPFS CID, with type detected from MIME. Transcoder normalizes
+// images to WebP @ 2048px and videos to H.264 @ 1080p / CRF 23 before
+// the IPFS add, so feed bytes are uniform across whatever cameras
+// uploaded them. Falls through to the raw file if hey-transcoder is
+// unavailable.
 const ipfsUploadMedia = async (file) => {
-  const resp = await ipfs.addBytes(file, file.name || "media", true);
+  const { transcoder } = await import("../lib/runtime");
+  const { blob } = await transcoder.processForUpload(file);
+  const resp = await ipfs.addBytes(blob, file.name || "media", true);
   const cid = resp?.data?.cid || resp?.cid;
   if (!cid) throw new Error("IPFS add_bytes returned no CID");
   const isVideo = file.type?.startsWith?.("video/");

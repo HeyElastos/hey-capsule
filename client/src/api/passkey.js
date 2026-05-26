@@ -129,7 +129,7 @@ const capsulePasskeySignup = async (name) => {
     createdAt: new Date().toISOString(),
   };
   await runtimeStorage.writeJson(PROFILE_FILE, user);
-  setSession(authKey);
+  await setSession(authKey);
 
   const creds = await readCreds();
   creds.push({

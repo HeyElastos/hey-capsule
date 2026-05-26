@@ -98,7 +98,7 @@ const toUiMessage = (m) => {
 const signAndPublish = async ({ topic, type, payload }) => {
   const kp = getKeypair();
   if (!kp) throw new Error("No session — sign in first");
-  const event = createSignedEvent({ type, payload }, kp);
+  const event = await createSignedEvent({ type, payload }, kp);
   await peer.publish({
     topic,
     message: JSON.stringify(event),
@@ -434,16 +434,18 @@ const capsuleLeaveRoom = async (roomId, did) => {
 // ─── Attachments (photos/videos) via IPFS ──────────────────────────
 
 const capsuleUploadAttachments = async (files, onProgress) => {
+  const { transcoder } = await import("../lib/runtime");
   const results = [];
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
-    const resp = await ipfs.addBytes(f, f.name || "file", true);
+    const { blob, format } = await transcoder.processForUpload(f);
+    const resp = await ipfs.addBytes(blob, f.name || "file", true);
     const cid = resp?.data?.cid || resp?.cid;
     results.push({
       url: `elastos://${cid}`,
       cid,
       type: f.type?.startsWith("video/") ? "video" : "photo",
-      mime: f.type,
+      mime: format ? `${f.type?.split("/")[0] || "application"}/${format}` : f.type,
       name: f.name,
     });
     if (onProgress) onProgress(Math.round(((i + 1) / files.length) * 100));
@@ -452,14 +454,20 @@ const capsuleUploadAttachments = async (files, onProgress) => {
 };
 
 const capsuleUploadVoice = async (blob, durationMs) => {
+  const { transcoder } = await import("../lib/runtime");
   const file = new File([blob], "voice.webm", { type: blob.type || "audio/webm" });
-  const resp = await ipfs.addBytes(file, "voice.webm", true);
+  // Voice messages get loudness-normalized to -16 LUFS and re-encoded to
+  // Opus @ 64 kbps. Tiny + consistent volume across senders.
+  const { blob: optimized, format } = await transcoder.processForUpload(file, {
+    targetCodec: "opus", bitrateK: 64, normalizeLufs: -16,
+  });
+  const resp = await ipfs.addBytes(optimized, `voice.${format || "webm"}`, true);
   const cid = resp?.data?.cid || resp?.cid;
   return {
     url: `elastos://${cid}`,
     cid,
     type: "voice",
-    mime: file.type,
+    mime: format ? `audio/${format}` : file.type,
     duration_ms: Math.round(durationMs || 0),
   };
 };
