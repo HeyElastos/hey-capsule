@@ -21,21 +21,109 @@
 const STORAGE_BASE = "/api/localhost/Users/self/.AppData/LocalHost/Hey";
 const PROVIDER_BASE = "/api/provider";
 
-// Cached capability tokens keyed by scheme. Acquired lazily on first use.
-const tokenCache = new Map();
+// ── Capability tokens ──────────────────────────────────────────────
+// The runtime's POST /api/capability/request returns either:
+//   { status: "granted",  token }      ← auto-granted for trusted apps
+//   { status: "pending",  request_id } ← user must approve in shell;
+//                                        poll GET /api/capability/request/:id
+//   { status: "auto_denied" | "denied", reason }
+//
+// Tokens are bearer-style; we send them via the X-Capability-Token header.
+// We cache acquired tokens in sessionStorage keyed by resource so they
+// survive page navigation within a session but not a full sign-out.
 
-// In-memory session token if the runtime sets one in a cookie / response.
-// Some runtime configurations expose tokens via /api/orchestrator/session.
-let sessionToken = null;
+const TOKEN_STORE_KEY = "hey-capability-tokens";
 
-export const setSessionToken = (token) => {
-  sessionToken = token;
+const loadTokenStore = () => {
+  try {
+    return JSON.parse(sessionStorage.getItem(TOKEN_STORE_KEY) || "{}");
+  } catch (_) { return {}; }
+};
+const saveTokenStore = (m) => {
+  try { sessionStorage.setItem(TOKEN_STORE_KEY, JSON.stringify(m)); } catch (_) {}
 };
 
-const authHeaders = () => {
-  const h = {};
-  if (sessionToken) h["X-Capability-Token"] = sessionToken;
-  return h;
+const tokenCache = loadTokenStore();
+
+// Shell sessions don't need a token; the runtime trusts them. For
+// dev/local mode the placeholder is fine. When we acquire a real
+// token we replace the placeholder for that resource.
+let fallbackToken = "capsule-session";
+
+export const setSessionToken = (token) => {
+  fallbackToken = token || "capsule-session";
+};
+
+// Resource → token (or fallback). Per-resource granularity is what the
+// runtime expects; mapping schemes → broad resources gives sane defaults.
+const tokenForResource = (resource) => tokenCache[resource] || fallbackToken;
+
+const schemeToResource = (scheme) => {
+  // Conservative default: ask for write on the whole scheme namespace.
+  // Real grants are usually narrower; that's fine, the runtime returns
+  // a token scoped to whatever the policy allowed.
+  return `elastos://${scheme}/*`;
+};
+
+// Acquire a capability token for the given resource + action. Returns
+// the token string, null if denied, or throws on transport error.
+const requestCapabilityToken = async (resource, action = "write") => {
+  const post = await fetch("/api/capability/request", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ resource, action }),
+  });
+  if (!post.ok) throw new RuntimeError(`capability/request HTTP ${post.status}`);
+  const initial = await post.json();
+  if (initial.status === "granted" && initial.token) return initial.token;
+  if (initial.status === "auto_denied" || initial.status === "denied") return null;
+  if (initial.status !== "pending" || !initial.request_id) {
+    throw new RuntimeError(`capability/request unexpected status: ${initial.status}`);
+  }
+
+  // Poll for grant. The shell renders the pending request; user clicks
+  // Grant. Backoff: 200ms, 400, 800, 1500, then 2000 forever, max 30s.
+  const delays = [200, 400, 800, 1500, 2000];
+  const deadline = Date.now() + 30_000;
+  let i = 0;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, delays[Math.min(i, delays.length - 1)]));
+    i++;
+    const r = await fetch(
+      `/api/capability/request/${encodeURIComponent(initial.request_id)}`,
+      { credentials: "include" }
+    );
+    if (!r.ok) continue;
+    const status = await r.json();
+    if (status.status === "granted" && status.token) return status.token;
+    if (status.status === "denied" || status.status === "expired") return null;
+  }
+  return null; // timed out
+};
+
+// Public helper: get a token for a resource, cached. Idempotent.
+export const getCapabilityToken = async (resource, action = "write") => {
+  if (tokenCache[resource]) return tokenCache[resource];
+  try {
+    const token = await requestCapabilityToken(resource, action);
+    if (token) {
+      tokenCache[resource] = token;
+      saveTokenStore(tokenCache);
+      return token;
+    }
+  } catch (err) {
+    // Transport error or runtime not exposing capability flow — fall
+    // back to the placeholder so calls still work in trusted-session
+    // mode. The user will see the real auth fail later if needed.
+    console.warn("[hey] capability acquire failed; using fallback", err);
+  }
+  return fallbackToken;
+};
+
+const authHeaders = (resource) => {
+  const token = resource ? tokenForResource(resource) : fallbackToken;
+  return token ? { "X-Capability-Token": token } : {};
 };
 
 // ─── Provider calls ────────────────────────────────────────────────
@@ -48,7 +136,7 @@ export const providerCall = async (scheme, op, body = {}) => {
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders(),
+      ...authHeaders(schemeToResource(scheme)),
     },
     body: JSON.stringify(body),
   });
@@ -158,6 +246,100 @@ export const ipfs = {
   health: () => providerCall("ipfs", "health", {}),
 };
 
+// ─── Transcoder provider (image / video / voice via ffmpeg) ─────────
+//
+// Wraps the hey-transcoder capsule. Each op base64s the input, hands it
+// off to the capsule, and base64-decodes the response. processForUpload
+// is the typical entry point: it inspects the Blob's MIME type, calls
+// the right transcode op, and falls through to the original blob if
+// the capsule isn't installed or ffmpeg can't handle the input.
+
+const blobToB64 = async (blob) =>
+  toBase64(new Uint8Array(await blob.arrayBuffer()));
+
+export const transcoder = {
+  transcodeImage: async (blob, opts = {}) =>
+    providerCall("hey-transcoder", "transcode_image", {
+      data: await blobToB64(blob),
+      target_format: opts.targetFormat || "webp",
+      max_dim: opts.maxDim || 2048,
+      quality: opts.quality || 85,
+      strip_metadata: opts.stripMetadata !== false,
+    }),
+
+  transcodeVideo: async (blob, opts = {}) =>
+    providerCall("hey-transcoder", "transcode_video", {
+      data: await blobToB64(blob),
+      target_codec: opts.targetCodec || "h264",
+      max_dim: opts.maxDim || 1080,
+      crf: opts.crf || 23,
+      fps: opts.fps || 30,
+      preset: opts.preset || "fast",
+    }),
+
+  transcodeVoice: async (blob, opts = {}) =>
+    providerCall("hey-transcoder", "transcode_voice", {
+      data: await blobToB64(blob),
+      target_codec: opts.targetCodec || "opus",
+      bitrate_k: opts.bitrateK || 64,
+      normalize_lufs: opts.normalizeLufs ?? -16,
+    }),
+
+  thumbnailVideo: async (blob, opts = {}) =>
+    providerCall("hey-transcoder", "thumbnail_video", {
+      data: await blobToB64(blob),
+      time_offset_s: opts.timeOffsetS ?? 1.0,
+      max_dim: opts.maxDim || 480,
+    }),
+
+  // Convenience: inspect Blob.type, call the right transcode op, return a
+  // fresh Blob ready for ipfs.addBytes. Silently passes through on any
+  // failure so uploads keep working when the capsule isn't installed.
+  processForUpload: async (data, hint = {}) => {
+    if (!(data instanceof Blob)) {
+      throw new Error("transcoder.processForUpload: expected Blob/File");
+    }
+    const type = (data.type || hint.type || "").toLowerCase();
+    try {
+      let result;
+      let mediaPrefix;
+      if (type.startsWith("image/")) {
+        result = await transcoder.transcodeImage(data, hint);
+        mediaPrefix = "image";
+      } else if (type.startsWith("video/")) {
+        result = await transcoder.transcodeVideo(data, hint);
+        mediaPrefix = "video";
+      } else if (type.startsWith("audio/")) {
+        result = await transcoder.transcodeVoice(data, hint);
+        mediaPrefix = "audio";
+      } else {
+        // Not a recognized media type — pass through unchanged.
+        return { blob: data, format: null, transcoded: false };
+      }
+      if (result && result.ok === false && result.error) {
+        throw new RuntimeError(result.error);
+      }
+      const bytes = fromBase64(result.data);
+      return {
+        blob: new Blob([bytes], { type: `${mediaPrefix}/${result.format}` }),
+        format: result.format,
+        codec: result.codec,
+        width: result.width,
+        height: result.height,
+        size_bytes: result.size_bytes,
+        transcoded: true,
+      };
+    } catch (err) {
+      // hey-transcoder not installed, ffmpeg error, codec missing, etc.
+      // Don't fail the upload — just post the original and warn.
+      console.warn("[hey] transcode failed, uploading original:", err);
+      return { blob: data, format: null, transcoded: false, error: err };
+    }
+  },
+
+  health: () => providerCall("hey-transcoder", "health", {}),
+};
+
 // ─── DID provider (resolve / verify any did:key) ───────────────────
 
 export const did = {
@@ -171,12 +353,15 @@ export const did = {
 const storagePath = (relative) =>
   `${STORAGE_BASE}/${(relative || "").replace(/^\/+/, "")}`;
 
+// localhost-provider calls all share one broad resource for cap-token purposes.
+const LOCALHOST_RESOURCE = "localhost://*";
+
 export const storage = {
   // Read a path. Returns parsed JSON, raw text, or Uint8Array (caller hints).
   readJson: async (path) => {
     const resp = await fetch(storagePath(path), {
       credentials: "include",
-      headers: authHeaders(),
+      headers: authHeaders(LOCALHOST_RESOURCE),
     });
     if (resp.status === 404) return null;
     if (!resp.ok)
@@ -188,7 +373,7 @@ export const storage = {
     const resp = await fetch(storagePath(path), {
       method: "PUT",
       credentials: "include",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json", ...authHeaders(LOCALHOST_RESOURCE) },
       body: JSON.stringify(value),
     });
     if (!resp.ok) {
@@ -205,7 +390,7 @@ export const storage = {
     const resp = await fetch(storagePath(path), {
       method: "DELETE",
       credentials: "include",
-      headers: authHeaders(),
+      headers: authHeaders(LOCALHOST_RESOURCE),
     });
     if (!resp.ok && resp.status !== 404)
       throw new RuntimeError(`localhost DELETE ${path}: HTTP ${resp.status}`);
@@ -215,7 +400,7 @@ export const storage = {
   list: async (path) => {
     const resp = await fetch(`${storagePath(path)}?list=true`, {
       credentials: "include",
-      headers: authHeaders(),
+      headers: authHeaders(LOCALHOST_RESOURCE),
     });
     if (resp.status === 404) return [];
     if (!resp.ok)
@@ -227,12 +412,32 @@ export const storage = {
     const resp = await fetch(`${storagePath(path)}?mkdir=true`, {
       method: "POST",
       credentials: "include",
-      headers: authHeaders(),
+      headers: authHeaders(LOCALHOST_RESOURCE),
     });
     if (!resp.ok && resp.status !== 409)
       throw new RuntimeError(`localhost MKDIR ${path}: HTTP ${resp.status}`);
     return true;
   },
+};
+
+// ── Boot-time capability acquisition ──────────────────────────────
+// Hey needs write on localhost (its own storage), and message on each
+// provider it actually uses. Acquire them in parallel at app boot so
+// every subsequent call has a real token in its X-Capability-Token
+// header. Each acquire falls through silently to the placeholder if
+// the runtime returns "denied" or isn't gating yet — so this is
+// non-blocking and dev-mode-friendly.
+export const acquireBootCapabilities = async () => {
+  const wants = [
+    { resource: "localhost://*",       action: "write" },
+    { resource: "elastos://peer/*",    action: "message" },
+    { resource: "elastos://ipfs/*",    action: "write" },
+    { resource: "elastos://did/*",     action: "read" },
+    { resource: "elastos://hey-transcoder/*", action: "execute" },
+  ];
+  await Promise.all(
+    wants.map((w) => getCapabilityToken(w.resource, w.action).catch(() => null))
+  );
 };
 
 // ─── Capability flow (operator-grant model) ────────────────────────

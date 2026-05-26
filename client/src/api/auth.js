@@ -1,90 +1,31 @@
-import axios from "axios";
+// Hey Social — capsule-only API layer.
+//
+// All data flows through the Elastos Runtime:
+//   - storage:  /api/localhost/Users/self/.AppData/LocalHost/Hey/* (profile,
+//               follows, post cache, notification index)
+//   - peer:     /api/provider/peer/* (Carrier gossip — posts, follows, comments)
+//   - ipfs:     /api/provider/ipfs/* (post media + avatar storage)
+//   - did:      /api/provider/did/* (DID resolution for unknown senders)
+//   - shell.js: /api/localhost/Users/self/.AppData/Identity/profile.json
+//               (shared identity with the host shell, e.g. hey-home)
+//
+// There is no Hey-owned backend. Signing happens with a non-extractable
+// Web Crypto Ed25519 key kept in IndexedDB (see lib/keystore.js).
+
 import {
   generateAuthKey,
   hashAuthKey,
   expandKeypair,
 } from "../lib/identity";
-import { isCapsuleMode } from "../lib/mode";
-import { storage as runtimeStorage, peer, ipfs } from "../lib/runtime";
-import { setSession, clearSession, getKeypair, getDidKey } from "../lib/session";
-import { createSignedEvent, verifySignedEvent } from "../lib/events";
+import { storage, peer, ipfs } from "../lib/runtime";
+import { setSession, clearSession, getKeypair } from "../lib/session";
+import { createSignedEvent } from "../lib/events";
 import { readSharedIdentity, writeSharedIdentity } from "../lib/shell";
 
-const API = axios.create({
-  baseURL: "/api",
-});
-
-const authHeaders = (token) => ({ Authorization: `Bearer ${token}` });
-
-// Auto-refresh on 401: when an authed request fails with 401, try once to
-// swap in a fresh access token via the refresh endpoint, then retry the
-// original request. If refresh fails, drop the session and reload to landing.
-let refreshing = null;
-API.interceptors.response.use(
-  (r) => r,
-  async (error) => {
-    // Defense in depth: in capsule mode there is no Hey backend, no
-    // JWT tokens, and no /api/users/refresh route. Every public auth
-    // call already short-circuits to the capsule branch BEFORE hitting
-    // axios, so this interceptor cannot fire — but if some future code
-    // path slips through, we don't want it falling back to a backend
-    // URL. Reject immediately.
-    if (isCapsuleMode()) return Promise.reject(error);
-    const original = error.config || {};
-    const status = error.response?.status;
-    if (
-      status !== 401 ||
-      original._retried ||
-      original.url?.includes("/users/refresh") ||
-      original.url?.includes("/users/signin") ||
-      original.url?.includes("/users/signup")
-    ) {
-      return Promise.reject(error);
-    }
-    const stored = JSON.parse(localStorage.getItem("profile") || "null");
-    if (!stored?.refreshToken) return Promise.reject(error);
-    try {
-      if (!refreshing) {
-        refreshing = axios.post("/api/users/refresh", {
-          refreshToken: stored.refreshToken,
-        });
-      }
-      const { data } = await refreshing;
-      refreshing = null;
-      const next = {
-        ...stored,
-        accessToken: data.accessToken,
-        refreshToken: data.refreshToken,
-        user: data.user || stored.user,
-      };
-      localStorage.setItem("profile", JSON.stringify(next));
-      original._retried = true;
-      original.headers = {
-        ...(original.headers || {}),
-        Authorization: `Bearer ${data.accessToken}`,
-      };
-      return API.request(original);
-    } catch (e) {
-      refreshing = null;
-      localStorage.removeItem("profile");
-      if (typeof window !== "undefined") window.location.assign("/");
-      return Promise.reject(e);
-    }
-  }
-);
-
-// ─── signup/signin: capsule mode vs server mode ──────────────────────
-//
-// In server mode (default): POST to Hey's Express backend, which generates
-// the authKey + JWT, stores authKeyHash + user record, returns everything.
-//
-// In capsule mode: there is no Hey backend. We generate the authKey in the
-// browser, derive an Ed25519 keypair, compute did:key, hash the authKey for
-// later verification, and write the profile to /api/localhost storage via
-// the runtime. The shape we return matches the server response so the rest
-// of the UI doesn't need to change.
-
 const PROFILE_FILE = "profile.json";
+const FOLLOWS_FILE = "follows.json";
+
+const now = () => Date.now();
 
 const newUserRecord = ({ name, didKey, authKeyHash }) => ({
   id: crypto.randomUUID(),
@@ -114,18 +55,48 @@ const publicUserShape = (user) => ({
   },
 });
 
-const capsuleSignUp = async ({ name }) => {
+const ensureProfile = async () => {
+  const me = await storage.readJson(PROFILE_FILE);
+  if (!me) throw new Error("Not signed in");
+  return me;
+};
+
+// ── Sign + publish a signed gossip event ─────────────────────────────
+
+const signEventAndPublish = async (topic, type, payload) => {
+  const kp = getKeypair();
+  if (!kp) throw new Error("Not signed in");
+  const event = await createSignedEvent({ type, payload }, kp);
+  await peer.publish({
+    topic,
+    message: JSON.stringify(event),
+    sender_id: event.sender_did,
+    ts: event.ts,
+    signature: event.signature,
+  });
+  return event;
+};
+
+// ─── Signup / sign-in ───────────────────────────────────────────────
+//
+// Recovery key is generated in the browser, Ed25519 keypair derived
+// from it, then the seed is imported as a non-extractable Web Crypto
+// key and persisted in IndexedDB. The raw seed never appears in
+// storage. SHA-256(seed-hex) is what we save as `authKeyHash` so we
+// can verify a re-entered recovery key without keeping the secret.
+
+export const signUp = async ({ name }) => {
   if (!name || !name.trim()) {
     throw new Error("Display name is required");
   }
 
-  // 1. If the desktop shell (hey-home) already minted an identity for
-  //    this node, adopt it instead of creating a second one. The user
-  //    will be prompted to enter their recovery key on the sign-in
+  // 1. If the desktop shell (e.g. hey-home) already minted an identity
+  //    for this node, adopt it instead of creating a second one. The
+  //    user will be prompted to enter their recovery key on the sign-in
   //    screen the first time they need to sign something.
   const shared = await readSharedIdentity();
   if (shared && shared.didKey && shared.recoveryKeyHash) {
-    const existingLocal = await runtimeStorage.readJson(PROFILE_FILE);
+    const existingLocal = await storage.readJson(PROFILE_FILE);
     if (!existingLocal) {
       const user = newUserRecord({
         name: shared.name || name.trim(),
@@ -133,7 +104,7 @@ const capsuleSignUp = async ({ name }) => {
         authKeyHash: shared.recoveryKeyHash,
       });
       user.createdAt = shared.createdAt || user.createdAt;
-      await runtimeStorage.writeJson(PROFILE_FILE, user);
+      await storage.writeJson(PROFILE_FILE, user);
     }
     const err = new Error(
       "Welcome back — this node already has your identity. Sign in with your recovery key."
@@ -143,8 +114,8 @@ const capsuleSignUp = async ({ name }) => {
     throw err;
   }
 
-  // 2. Local profile (Hey's own) already exists — sign in path.
-  const existing = await runtimeStorage.readJson(PROFILE_FILE);
+  // 2. Local profile already exists — sign in path.
+  const existing = await storage.readJson(PROFILE_FILE);
   if (existing) {
     const err = new Error("A profile already exists on this node — sign in instead.");
     err.response = { data: { message: err.message } };
@@ -152,13 +123,13 @@ const capsuleSignUp = async ({ name }) => {
   }
 
   // 3. True first-run signup — mint a fresh identity AND publish it to
-  //    the shared identity path so hey-home picks it up on next boot.
+  //    the shared identity path so the desktop shell picks it up on next boot.
   const authKey = generateAuthKey();
   const { didKey } = expandKeypair(authKey);
   const authKeyHash = await hashAuthKey(authKey);
 
   const user = newUserRecord({ name, didKey, authKeyHash });
-  await runtimeStorage.writeJson(PROFILE_FILE, user);
+  await storage.writeJson(PROFILE_FILE, user);
 
   // Import the seed as a non-extractable Web Crypto key and persist
   // the handle in IndexedDB. setSession zeroes the seed in place after
@@ -186,12 +157,12 @@ const capsuleSignUp = async ({ name }) => {
   };
 };
 
-const capsuleSignIn = async ({ authKey }) => {
+export const signIn = async ({ authKey }) => {
   if (!authKey || !authKey.trim()) {
     throw new Error("Hey key is required");
   }
   const trimmed = authKey.trim();
-  const user = await runtimeStorage.readJson(PROFILE_FILE);
+  const user = await storage.readJson(PROFILE_FILE);
   if (!user) {
     const err = new Error("No profile on this node — sign up first.");
     err.response = { data: { message: err.message } };
@@ -205,7 +176,7 @@ const capsuleSignIn = async ({ authKey }) => {
   }
   if (!user.didKey) {
     user.didKey = expandKeypair(trimmed).didKey;
-    await runtimeStorage.writeJson(PROFILE_FILE, user);
+    await storage.writeJson(PROFILE_FILE, user);
   }
   await setSession(trimmed);
   return {
@@ -217,41 +188,26 @@ const capsuleSignIn = async ({ authKey }) => {
   };
 };
 
-export const signUp = async (payload) => {
-  if (isCapsuleMode()) return capsuleSignUp(payload);
-  const response = await API.post("/users/signup", payload, {
-    headers: { "Content-Type": "application/json" },
-  });
-  return response.data;
-};
+// ─── Profile read / update / delete ─────────────────────────────────
 
-export const signIn = async (payload) => {
-  if (isCapsuleMode()) return capsuleSignIn(payload);
-  const response = await API.post("/users/signin", payload);
-  return response.data;
-};
-
-// ─── Migration 2: profile read/update/delete via /api/localhost ──────
-
-const capsuleDeleteAccount = async () => {
-  await runtimeStorage.remove(PROFILE_FILE);
+export const deleteAccount = async () => {
+  await storage.remove(PROFILE_FILE);
   await clearSession();
   return { message: "Account deleted" };
 };
 
-const capsuleUpdateProfile = async ({ name, bio, avatar }) => {
-  const user = await runtimeStorage.readJson(PROFILE_FILE);
+export const updateProfile = async ({ name, bio, avatar }) => {
+  const user = await storage.readJson(PROFILE_FILE);
   if (!user) throw new Error("No profile to update");
 
   if (typeof name === "string") user.name = name.trim().slice(0, 30);
   if (typeof bio === "string") user.bio = bio.trim().slice(0, 280);
 
-  // Avatar is a File/Blob in server mode (multipart). In capsule mode we
-  // store it on IPFS, save the CID on the user record. The browser fetches
-  // it via the runtime's content gateway.
+  // Avatar bytes → IPFS CID. Aggressively transcoded to a small WebP
+  // with EXIF stripped before pinning. The runtime serves the CID via
+  // its content gateway when read.
   if (avatar) {
-    const { ipfs, transcoder } = await import("../lib/runtime");
-    // Avatars get aggressively shrunk + EXIF-stripped before IPFS.
+    const { transcoder } = await import("../lib/runtime");
     const { blob: optimized } = await transcoder.processForUpload(avatar, {
       maxDim: 256, quality: 90, targetFormat: "webp", stripMetadata: true,
     });
@@ -262,16 +218,16 @@ const capsuleUpdateProfile = async ({ name, bio, avatar }) => {
     user.avatarCid = cid;
   }
 
-  await runtimeStorage.writeJson(PROFILE_FILE, user);
+  await storage.writeJson(PROFILE_FILE, user);
   return { user: publicUserShape(user) };
 };
 
-// Resolve a peer profile by id (which in capsule mode is their did:key).
-// Phase 3 will publish profiles via gossip discovery; for now we read from
-// the local known-peers cache file, falling back to a stub.
-const capsuleGetUserById = async (id) => {
+// Resolve a peer profile by id, which is their did:key. Phase 3 will
+// publish profiles via gossip discovery; for now we read from the
+// local known-peers cache, falling back to a stub.
+export const getUserById = async (id) => {
   if (typeof id === "string" && id.startsWith("did:key:z")) {
-    const cache = (await runtimeStorage.readJson("peers.json")) || {};
+    const cache = (await storage.readJson("peers.json")) || {};
     const entry = cache[id];
     if (entry) return entry;
     return {
@@ -279,86 +235,35 @@ const capsuleGetUserById = async (id) => {
       relationship: "none",
     };
   }
-  // If caller passed an old-style server user id, fall back to local profile
-  const me = await runtimeStorage.readJson(PROFILE_FILE);
+  const me = await storage.readJson(PROFILE_FILE);
   if (me && me.id === id) {
     return { user: publicUserShape(me), relationship: "self" };
   }
   return null;
 };
 
-export const deleteAccount = async (token) => {
-  if (isCapsuleMode()) return capsuleDeleteAccount();
-  const response = await API.delete("/users/me", { headers: authHeaders(token) });
-  return response.data;
-};
-
-export const updateProfile = async ({ name, bio, avatar }, token) => {
-  if (isCapsuleMode()) return capsuleUpdateProfile({ name, bio, avatar });
-  const formData = new FormData();
-  if (typeof name === "string") formData.append("name", name);
-  if (typeof bio === "string") formData.append("bio", bio);
-  if (avatar) formData.append("avatar", avatar);
-
-  const response = await API.patch("/users/me", formData, {
-    headers: authHeaders(token),
-  });
-  return response.data;
-};
-
-export const getUserById = async (id, token) => {
-  if (isCapsuleMode()) return capsuleGetUserById(id);
-  const response = await API.get(`/users/${id}`, token ? { headers: authHeaders(token) } : undefined);
-  return response.data;
-};
-
-// ─── Capsule-mode helpers for follow, posts, notifications ──────────
+// ─── Follow flow ─────────────────────────────────────────────────────
 //
 // Topics:
 //   hey-v0/user/<did>/posts    — a user's outgoing post events
-//   hey-v0/user/<did>/notif    — notifications inbox (likes, replies, follow requests)
+//   hey-v0/user/<did>/notif    — notifications inbox
 //   hey-v0/follow/<did>        — follow-request / accept / reject events
 //
 // Local storage:
 //   posts/by-id/<id>.json      — own + cached received posts
-//   posts/feed.json            — chronological index of post ids (newest first)
-//   posts/by-user/<did>.json   — list of post ids by author
+//   posts/feed.json            — chronological index of post ids
 //   follows.json               — { following: [did], followers: [did], pending: [did] }
-//   notifications/<id>.json    — own notification records
-//   notifications/index.json   — sorted index { id → ts, read }
+//   notifications/index.json   — sorted notifications index
 
-const signEventAndPublish = async (topic, type, payload) => {
-  const kp = getKeypair();
-  if (!kp) throw new Error("Not signed in");
-  const event = await createSignedEvent({ type, payload }, kp);
-  await peer.publish({
-    topic,
-    message: JSON.stringify(event),
-    sender_id: event.sender_did,
-    ts: event.ts,
-    signature: event.signature,
-  });
-  return event;
-};
-
-const ensureProfile = async () => {
-  const me = await runtimeStorage.readJson(PROFILE_FILE);
-  if (!me) throw new Error("Not signed in");
-  return me;
-};
-
-// ─── Follow flow ──────────────────────────────────────────────────
-
-const followsFile = "follows.json";
 const readFollows = async () =>
-  (await runtimeStorage.readJson(followsFile)) || {
+  (await storage.readJson(FOLLOWS_FILE)) || {
     following: [],
     followers: [],
     pending: [],
   };
-const writeFollows = (f) => runtimeStorage.writeJson(followsFile, f);
+const writeFollows = (f) => storage.writeJson(FOLLOWS_FILE, f);
 
-const capsuleFollowUser = async (peerDid) => {
+export const followUser = async (peerDid) => {
   const me = await ensureProfile();
   if (!peerDid?.startsWith?.("did:key:z")) throw new Error("Invalid did");
   if (peerDid === me.didKey) throw new Error("Cannot follow yourself");
@@ -377,7 +282,7 @@ const capsuleFollowUser = async (peerDid) => {
   return { ok: true };
 };
 
-const capsuleUnfollowUser = async (peerDid) => {
+export const unfollowUser = async (peerDid) => {
   await peer.leaveTopic(`hey-v0/user/${peerDid}/posts`);
   const follows = await readFollows();
   follows.following = follows.following.filter((d) => d !== peerDid);
@@ -389,7 +294,7 @@ const capsuleUnfollowUser = async (peerDid) => {
   return { ok: true };
 };
 
-const capsuleAcceptFollow = async (peerDid) => {
+export const acceptFollow = async (peerDid) => {
   const follows = await readFollows();
   follows.pending = follows.pending.filter((d) => d !== peerDid);
   if (!follows.followers.includes(peerDid)) follows.followers.push(peerDid);
@@ -401,7 +306,7 @@ const capsuleAcceptFollow = async (peerDid) => {
   return { ok: true };
 };
 
-const capsuleRejectFollow = async (peerDid) => {
+export const rejectFollow = async (peerDid) => {
   const follows = await readFollows();
   follows.pending = follows.pending.filter((d) => d !== peerDid);
   await writeFollows(follows);
@@ -412,22 +317,18 @@ const capsuleRejectFollow = async (peerDid) => {
   return { ok: true };
 };
 
-const now = () => Date.now();
-
 // ─── Posts: compose → IPFS for media → signed gossip event ──────────
 
-const readPost = (id) => runtimeStorage.readJson(`posts/by-id/${id}.json`);
-const writePost = (id, post) =>
-  runtimeStorage.writeJson(`posts/by-id/${id}.json`, post);
+const readPost = (id) => storage.readJson(`posts/by-id/${id}.json`);
+const writePost = (id, post) => storage.writeJson(`posts/by-id/${id}.json`, post);
 const readFeedIndex = async () =>
-  (await runtimeStorage.readJson("posts/feed.json")) || [];
-const writeFeedIndex = (idx) => runtimeStorage.writeJson("posts/feed.json", idx);
+  (await storage.readJson("posts/feed.json")) || [];
+const writeFeedIndex = (idx) => storage.writeJson("posts/feed.json", idx);
 
-// File → IPFS CID, with type detected from MIME. Transcoder normalizes
-// images to WebP @ 2048px and videos to H.264 @ 1080p / CRF 23 before
-// the IPFS add, so feed bytes are uniform across whatever cameras
-// uploaded them. Falls through to the raw file if hey-transcoder is
-// unavailable.
+// File → IPFS CID. Transcoder normalizes images to WebP @ 2048px and
+// videos to H.264 @ 1080p / CRF 23 before the IPFS add, so feed bytes
+// are uniform across whatever cameras uploaded them. Falls through to
+// the raw file if hey-transcoder is unavailable.
 const ipfsUploadMedia = async (file) => {
   const { transcoder } = await import("../lib/runtime");
   const { blob } = await transcoder.processForUpload(file);
@@ -444,7 +345,7 @@ const ipfsUploadMedia = async (file) => {
   };
 };
 
-const capsuleCreatePost = async ({ caption, images }, _token, onProgress) => {
+export const createPost = async ({ caption, images }, onProgress) => {
   const me = await ensureProfile();
   const total = (images || []).length;
 
@@ -472,7 +373,6 @@ const capsuleCreatePost = async ({ caption, images }, _token, onProgress) => {
     ts,
   };
 
-  // Publish + cache locally
   await signEventAndPublish(`hey-v0/user/${me.didKey}/posts`, "post.create", post);
   await writePost(id, post);
   const idx = await readFeedIndex();
@@ -481,28 +381,28 @@ const capsuleCreatePost = async ({ caption, images }, _token, onProgress) => {
   return { post };
 };
 
-const capsuleGetPosts = async () => {
+export const getPosts = async () => {
   const idx = await readFeedIndex();
   const posts = await Promise.all(idx.slice(0, 50).map((e) => readPost(e.id)));
   return { posts: posts.filter(Boolean) };
 };
 
-const capsuleGetPost = async (id) => {
+export const getPost = async (id) => {
   const post = await readPost(id);
   if (!post) throw new Error("Post not found");
   return { post };
 };
 
-const capsuleGetUserPosts = async (idOrDid) => {
-  const me = await runtimeStorage.readJson(PROFILE_FILE);
+export const getUserPosts = async (idOrDid) => {
+  const me = await storage.readJson(PROFILE_FILE);
   let did = idOrDid;
   if (idOrDid?.startsWith?.("did:key:z")) did = idOrDid;
   else if (me?.id === idOrDid) did = me.didKey;
-  const all = await capsuleGetPosts();
+  const all = await getPosts();
   return { posts: all.posts.filter((p) => p.userDid === did) };
 };
 
-const capsuleReactToPost = async (postId, emoji) => {
+export const reactToPost = async (postId, emoji) => {
   const me = await ensureProfile();
   const post = await readPost(postId);
   if (!post) throw new Error("Post not found");
@@ -524,7 +424,7 @@ const capsuleReactToPost = async (postId, emoji) => {
   return { post };
 };
 
-const capsuleRepostPost = async (postId) => {
+export const repostPost = async (postId) => {
   const me = await ensureProfile();
   const post = await readPost(postId);
   if (!post) throw new Error("Post not found");
@@ -539,7 +439,7 @@ const capsuleRepostPost = async (postId) => {
   return { post };
 };
 
-const capsuleAddComment = async (postId, text, parentId = null) => {
+export const addComment = async (postId, text, parentId = null) => {
   const me = await ensureProfile();
   const post = await readPost(postId);
   if (!post) throw new Error("Post not found");
@@ -563,7 +463,7 @@ const capsuleAddComment = async (postId, text, parentId = null) => {
   return { post, comment };
 };
 
-const capsuleReactToComment = async (postId, commentId, emoji) => {
+export const reactToComment = async (postId, commentId, emoji) => {
   const me = await ensureProfile();
   const post = await readPost(postId);
   if (!post) throw new Error("Post not found");
@@ -588,7 +488,7 @@ const capsuleReactToComment = async (postId, commentId, emoji) => {
   return { post };
 };
 
-const capsuleDeleteComment = async (postId, commentId) => {
+export const deleteComment = async (postId, commentId) => {
   const me = await ensureProfile();
   const post = await readPost(postId);
   if (!post) throw new Error("Post not found");
@@ -603,12 +503,12 @@ const capsuleDeleteComment = async (postId, commentId) => {
   return { post };
 };
 
-const capsuleDeletePost = async (postId) => {
+export const deletePost = async (postId) => {
   const me = await ensureProfile();
   const post = await readPost(postId);
   if (!post) throw new Error("Post not found");
   if (post.userDid !== me.didKey) throw new Error("Not your post");
-  await runtimeStorage.remove(`posts/by-id/${postId}.json`);
+  await storage.remove(`posts/by-id/${postId}.json`);
   const idx = await readFeedIndex();
   await writeFeedIndex(idx.filter((e) => e.id !== postId));
   await signEventAndPublish(`hey-v0/user/${me.didKey}/posts`, "post.delete", {
@@ -618,165 +518,21 @@ const capsuleDeletePost = async (postId) => {
   return { ok: true };
 };
 
-// ─── Notifications ────────────────────────────────────────────────
+// ─── Notifications ───────────────────────────────────────────────────
 
-const capsuleListNotifications = async () =>
-  (await runtimeStorage.readJson("notifications/index.json")) || { notifications: [] };
+export const listNotifications = async () =>
+  (await storage.readJson("notifications/index.json")) || { notifications: [] };
 
-const capsuleMarkNotificationsRead = async () => {
-  const wrap = (await runtimeStorage.readJson("notifications/index.json")) || { notifications: [] };
+export const markNotificationsRead = async () => {
+  const wrap = (await storage.readJson("notifications/index.json")) || { notifications: [] };
   wrap.notifications = (wrap.notifications || []).map((n) => ({ ...n, read: true }));
-  await runtimeStorage.writeJson("notifications/index.json", wrap);
+  await storage.writeJson("notifications/index.json", wrap);
   return wrap;
 };
 
-const capsuleDeleteNotification = async (id) => {
-  const wrap = (await runtimeStorage.readJson("notifications/index.json")) || { notifications: [] };
+export const deleteNotification = async (id) => {
+  const wrap = (await storage.readJson("notifications/index.json")) || { notifications: [] };
   wrap.notifications = (wrap.notifications || []).filter((n) => n.id !== id);
-  await runtimeStorage.writeJson("notifications/index.json", wrap);
+  await storage.writeJson("notifications/index.json", wrap);
   return wrap;
-};
-
-// ────────────────────────────────────────────────────────────────────
-// Public exports — branched
-// ────────────────────────────────────────────────────────────────────
-
-export const followUser = async (id, token) => {
-  if (isCapsuleMode()) return capsuleFollowUser(id);
-  const response = await API.post(`/users/${id}/follow`, {}, { headers: authHeaders(token) });
-  return response.data;
-};
-
-export const unfollowUser = async (id, token) => {
-  if (isCapsuleMode()) return capsuleUnfollowUser(id);
-  const response = await API.delete(`/users/${id}/follow`, { headers: authHeaders(token) });
-  return response.data;
-};
-
-export const acceptFollow = async (id, token) => {
-  if (isCapsuleMode()) return capsuleAcceptFollow(id);
-  const response = await API.post(`/users/${id}/follow/accept`, {}, { headers: authHeaders(token) });
-  return response.data;
-};
-
-export const rejectFollow = async (id, token) => {
-  if (isCapsuleMode()) return capsuleRejectFollow(id);
-  const response = await API.post(`/users/${id}/follow/reject`, {}, { headers: authHeaders(token) });
-  return response.data;
-};
-
-export const getUserPosts = async (id, token) => {
-  if (isCapsuleMode()) return capsuleGetUserPosts(id);
-  const response = await API.get(`/posts/by-user/${id}`, token ? { headers: authHeaders(token) } : undefined);
-  return response.data;
-};
-
-export const listNotifications = async (token) => {
-  if (isCapsuleMode()) return capsuleListNotifications();
-  const response = await API.get("/notifications", { headers: authHeaders(token) });
-  return response.data;
-};
-
-export const markNotificationsRead = async (token) => {
-  if (isCapsuleMode()) return capsuleMarkNotificationsRead();
-  const response = await API.post("/notifications/read-all", {}, { headers: authHeaders(token) });
-  return response.data;
-};
-
-export const deleteNotification = async (id, token) => {
-  if (isCapsuleMode()) return capsuleDeleteNotification(id);
-  const response = await API.delete(`/notifications/${id}`, { headers: authHeaders(token) });
-  return response.data;
-};
-
-export const createPost = async ({ caption, images }, token, onProgress) => {
-  if (isCapsuleMode()) return capsuleCreatePost({ caption, images }, token, onProgress);
-  const formData = new FormData();
-  formData.append("caption", caption || "");
-  for (const file of images || []) {
-    formData.append("media", file);
-  }
-
-  const response = await API.post("/posts", formData, {
-    headers: authHeaders(token),
-    onUploadProgress: (event) => {
-      if (event.total && onProgress) {
-        onProgress(Math.round((event.loaded / event.total) * 100));
-      }
-    },
-  });
-  return response.data;
-};
-
-export const getPosts = async (token) => {
-  if (isCapsuleMode()) return capsuleGetPosts();
-  const response = await API.get(
-    "/posts",
-    token ? { headers: authHeaders(token) } : undefined
-  );
-  return response.data;
-};
-
-export const getPost = async (id, token) => {
-  if (isCapsuleMode()) return capsuleGetPost(id);
-  const response = await API.get(
-    `/posts/${id}`,
-    token ? { headers: authHeaders(token) } : undefined
-  );
-  return response.data;
-};
-
-export const reactToPost = async (id, emoji, token) => {
-  if (isCapsuleMode()) return capsuleReactToPost(id, emoji);
-  const response = await API.post(
-    `/posts/${id}/react`,
-    { emoji },
-    { headers: authHeaders(token) }
-  );
-  return response.data;
-};
-
-export const repostPost = async (id, token) => {
-  if (isCapsuleMode()) return capsuleRepostPost(id);
-  const response = await API.post(
-    `/posts/${id}/repost`,
-    {},
-    { headers: authHeaders(token) }
-  );
-  return response.data;
-};
-
-export const addComment = async (id, text, token, parentId = null) => {
-  if (isCapsuleMode()) return capsuleAddComment(id, text, parentId);
-  const response = await API.post(
-    `/posts/${id}/comments`,
-    parentId ? { text, parentId } : { text },
-    { headers: authHeaders(token) }
-  );
-  return response.data;
-};
-
-export const reactToComment = async (postId, commentId, emoji, token) => {
-  if (isCapsuleMode()) return capsuleReactToComment(postId, commentId, emoji);
-  const response = await API.post(
-    `/posts/${postId}/comments/${commentId}/react`,
-    { emoji },
-    { headers: authHeaders(token) }
-  );
-  return response.data;
-};
-
-export const deleteComment = async (postId, commentId, token) => {
-  if (isCapsuleMode()) return capsuleDeleteComment(postId, commentId);
-  const response = await API.delete(
-    `/posts/${postId}/comments/${commentId}`,
-    { headers: authHeaders(token) }
-  );
-  return response.data;
-};
-
-export const deletePost = async (id, token) => {
-  if (isCapsuleMode()) return capsuleDeletePost(id);
-  const response = await API.delete(`/posts/${id}`, { headers: authHeaders(token) });
-  return response.data;
 };

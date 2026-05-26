@@ -1,96 +1,107 @@
 # Hey Social
 
-A photo and video social app on Elastos. Image-first, key-based identity,
-no email, no algorithm.
+A photo, video, and chat social app on Elastos. Capsule-native,
+federated peer-to-peer over Elastos Carrier, media on IPFS, sovereign
+identity. No backend, no email, no algorithm.
 
 ## What it is
 
-Hey Social lets people share photos and short videos with friends, react
-with any emoji, comment, reply, and repost. You sign in with a private key
-(or a hardware passkey — Yubikey, Nitrokey, Touch ID, Windows Hello). No email,
-no password, no ads.
+Hey Social lets people share photos, short videos, and chat with friends,
+react with any emoji, comment, reply, and repost. You sign in with a
+recovery key (or a hardware passkey — Yubikey, Nitrokey, Touch ID,
+Windows Hello). No email, no password, no ads.
+
+It runs as an Elastos Runtime capsule: a sandboxed microvm that talks
+only to the runtime's storage, Carrier, IPFS, and DID providers. No
+Hey-owned server runs anywhere. Two phones on the same WiFi can
+federate over LAN with no internet (Carrier and IPFS both have mDNS);
+cross-internet federation uses Carrier's DHT + relay infrastructure.
 
 ## Highlights
 
-- **Two feeds, one app**: Photos at `/` and videos at `/videos`. The top
-  bar's camera / video icons switch environments; the active environment is
-  marked with an accent-tinted pill and a glowing underline.
-- **Key-based signup** — generate a nickname, get a secret key, that's your
-  identity. Keep it safe.
+- **Two feeds + chat, one app**: photos at `/`, videos at `/videos`,
+  DMs and group rooms at `/chat`.
+- **Sovereign identity** — Ed25519 keypair derived from a recovery key
+  you generate locally. Same identity across all your devices via the
+  shared profile contract; one DID across Hey and the desktop shell.
+- **Hardened signing** — your private key is imported as a NON-EXTRACTABLE
+  Web Crypto CryptoKey and persisted in IndexedDB. The raw seed never
+  appears in JS memory or storage after import. XSS cannot exfiltrate
+  the key.
 - **Passkey support** — optional WebAuthn (FIDO2). Sign up or sign in by
-  touching a hardware key or using your platform biometric. Manage multiple
-  passkeys from your profile.
-- **Image pipeline** — uploads are auto-converted to AVIF (high quality,
-  small files) on the server via `sharp`. Max 12 images per post.
-- **Video pipeline** — direct upload, magic-byte validated, served with
-  immutable cache headers.
-- **Comments with threading** — reply to comments, react to comments,
-  hide individual comments on hover, collapse the whole section.
+  touching a hardware key or using your platform biometric. Manage
+  multiple passkeys from your profile.
+- **Media pipeline** — photos, videos, and voice clips run through the
+  `hey-transcoder` capsule (WebP @ 2048px / H.264 @ 1080p CRF 23 /
+  Opus @ 64 kbps LUFS-normalized), then pinned to IPFS via the
+  `ipfs-provider` capsule. Content-addressed, dedup'd, replicated.
+- **Federation over Carrier** — every post, comment, reaction, DM,
+  voice message, room message is a signed gossip event published to
+  a Carrier topic. Peers verify signatures on receive.
+- **Comments with threading** — reply, react, hide-on-hover, collapse.
 - **iPhone-style upload preview** — multi-photo posts stack like the
   Photos app, with a thumbnail strip to reorder.
-- **Profile** — handwritten brand mark, click-to-upload avatar, QR-code
-  share, photo grid + video grid split by mode.
-- **Onboarding** — handwritten welcome, profile setup, party-popper
-  celebration before landing in your feed.
+- **Profile** — handwritten Dancing Script brand mark, click-to-upload
+  avatar, QR-code share, photo + video grids.
+- **CSP-hardened** — strict Content-Security-Policy in `index.html`
+  (`script-src 'self'`, `object-src 'none'`, etc.) blocks injected
+  `<script>` tags.
 
 ## Stack
 
-- **Frontend** — Vite + React 18 + Tailwind, served on port 3000. Routes,
-  modals, and animations live in `client/src`. The dev server proxies
-  `/api` and `/uploads` to the backend.
-- **Backend** — Node + Express, served on port 4000. File-based JSON
-  database at `server/data/db.json` with in-memory caching, atomic
-  temp-file writes, and serialized writes via `async-mutex`.
-- **Auth** — JWT access tokens (6h) + refresh tokens (7d) signed with
-  per-process secrets (persisted to `server/data/.secrets.json` in dev,
-  required env vars in prod). Auto-refresh on 401 via an axios interceptor.
-- **Security** — Helmet, locked-down CORS, rate limits on auth + writes +
-  uploads, magic-byte file validation, `Content-Disposition: inline` +
-  `nosniff` on `/uploads`.
+- **Runtime container** — Elastos Runtime microvm, declared as
+  `elastos.capsule/v1`. See the [hey-capsule](https://github.com/HeyElastos/hey-capsule)
+  repo for the packaging (busybox + Node + Hey app + `init` baked into
+  `rootfs.ext4`).
+- **Frontend** — Vite + React 18 + Tailwind. The compiled bundle is what
+  ships inside the microvm.
+- **Talking to the host** — every fetch goes through the runtime HTTP
+  surface:
+  - `/api/localhost/Users/self/.AppData/LocalHost/Hey/*` (storage)
+  - `/api/localhost/Users/self/.AppData/Identity/profile.json` (shared identity)
+  - `/api/provider/peer/*` (Carrier gossip)
+  - `/api/provider/ipfs/*` (IPFS via Kubo)
+  - `/api/provider/did/*` (DID resolution)
+  - `/api/provider/hey-transcoder/*` (ffmpeg / WebP / Opus)
+- **Identity & signing** — Ed25519 (`@noble/curves` for derivation,
+  Web Crypto for the persisted non-extractable signing key).
+- **Required capsules** — `ipfs-provider` (declared in
+  [hey-capsule/capsule.json](https://github.com/HeyElastos/hey-capsule)),
+  optional `hey-transcoder` for normalized media.
 
-## Getting started
+## Running
+
+Hey Social is built and shipped as part of the
+[hey-capsule](https://github.com/HeyElastos/hey-capsule) packaging.
+Install on an Elastos Runtime that has `ipfs-provider` available; launch
+from the shell (hey-home or the stock home shell).
+
+To work on Hey locally with hot reload pointed at a runtime gateway:
 
 ```bash
-# Backend
-cd server
-npm install
-npm start         # listens on :4000
-
-# Frontend (in another shell)
 cd client
 npm install
-npm run dev       # listens on :3000
+npm run dev
 ```
 
-Open <http://localhost:3000>. Pick a nickname, copy the generated key, and
-you're in.
-
-### Optional env vars (production)
-
-```bash
-SECRET=<random 32+ chars>           # JWT signing key
-REFRESH_SECRET=<random 32+ chars>   # JWT refresh signing key
-CLIENT_ORIGIN=https://your.domain   # CORS allowlist
-RP_ID=your.domain                   # WebAuthn relying-party id
-WEBAUTHN_ORIGIN=https://your.domain # WebAuthn expected origin
-NODE_ENV=production                 # refuses to start without secrets
-```
+The Vite dev server proxies `/api/*` to a configured runtime gateway
+(see `vite.config.js`). Open <http://localhost:3000>, pick a nickname,
+copy the generated recovery key, you're in.
 
 ## Project structure
 
 ```
-client/src/
-  api/                axios helpers (auth, passkey)
-  components/         PostCard, ImageCarousel, modals, FloatingDock, …
-  pages/              Home, Clips, Profile, VideoPlayer, Onboarding, Landing
-server/
-  app.js              express setup, helmet, rate limits, error handler
-  controllers/        user, post, notification, passkey
-  middlewares/        auth, optionalAuth
-  routes/             route definitions
-  utils/              db, secrets, notifications
-  data/               db.json (created on first run)
-  uploads/            user-uploaded media (gitignored)
+client/
+  index.html            CSP meta, favicon link
+  public/hey-icon.svg   white Dancing Script "hey" wordmark
+  src/
+    api/                capsule API: auth, chat, passkey
+    lib/                runtime client, identity, keystore, session,
+                        events, shell-bridge
+    components/         PostCard, ImageCarousel, FloatingDock, modals, …
+    pages/              Home, Clips, Profile, Chat, VideoPlayer,
+                        Onboarding, Landing
+    main.jsx            boots initSession() then mounts the app
 ```
 
 ## License

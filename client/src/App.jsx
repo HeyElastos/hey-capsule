@@ -19,6 +19,7 @@ import Chat from "./pages/Chat";
 import FloatingDock from "./components/FloatingDock";
 import SignInModal from "./components/SignInModal";
 import { useProfile, clearProfile } from "./hooks/useProfile";
+import { useShell } from "./hooks/useShell";
 import {
   CameraIcon,
   VideoIcon,
@@ -31,12 +32,20 @@ const PATH_TO_MODE = { "/": "photo", "/videos": "video" };
 const App = () => {
   const profile = useProfile();
   const user = profile;
+  const shell = useShell();
   const navigate = useNavigate();
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
   const [direction, setDirection] = useState(null);
   const [mode, setMode] = useState(() => localStorage.getItem("mode") || "photo");
   const [signinOpen, setSigninOpen] = useState(false);
+  const [stockHomeDismissed, setStockHomeDismissed] = useState(
+    () => localStorage.getItem("hey-stock-home-dismissed") === "1"
+  );
+  const dismissStockHomeBanner = () => {
+    localStorage.setItem("hey-stock-home-dismissed", "1");
+    setStockHomeDismissed(true);
+  };
 
   useEffect(() => {
     const openHandler = () => setSigninOpen(true);
@@ -92,15 +101,41 @@ const App = () => {
 
   return (
     <div className="min-h-screen text-primary">
+      {user && shell.hostedByStockHome && !stockHomeDismissed && (
+        <div className="bg-amber-100/90 dark:bg-amber-500/15 border-b border-amber-300/40 dark:border-amber-500/25 text-amber-900 dark:text-amber-200">
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-2 text-sm sm:px-6">
+            <span>
+              You&rsquo;re on the stock Elastos shell. For the full Hey desktop
+              experience &mdash; welcome screen, lock screen, frosted chrome &mdash; install{" "}
+              <span className="font-semibold">hey-home</span>.
+            </span>
+            <button
+              type="button"
+              onClick={dismissStockHomeBanner}
+              className="text-xs font-medium opacity-70 hover:opacity-100"
+              aria-label="Dismiss"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
       {user && (
         <header className="sticky top-0 z-30 bg-surface-soft/95 backdrop-blur-xl shadow-[0_16px_40px_-18px_rgba(0,0,0,0.15)]">
           <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
-            <Link
-              to="/"
-              className="text-3xl font-semibold text-primary logo-handwritten sm:text-5xl"
-            >
-              Hey
-            </Link>
+            {shell.hostedByHeyHome ? (
+              // Hey-home already shows the Hey wordmark in the desktop
+              // chrome; suppress the in-app duplicate. Keep the Link
+              // as an invisible home target for keyboard users.
+              <Link to="/" className="sr-only">Hey</Link>
+            ) : (
+              <Link
+                to="/"
+                className="text-3xl font-semibold text-primary logo-handwritten sm:text-5xl"
+              >
+                Hey
+              </Link>
+            )}
 
             <nav className="flex flex-1 items-center justify-center gap-8 text-sm sm:gap-12">
               <Link
