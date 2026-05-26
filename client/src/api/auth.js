@@ -21,6 +21,7 @@ import { storage, peer, ipfs } from "../lib/runtime";
 import { setSession, clearSession, getKeypair } from "../lib/session";
 import { createSignedEvent } from "../lib/events";
 import { readSharedIdentity, writeSharedIdentity } from "../lib/shell";
+import * as heyVault from "../lib/vault";
 
 const PROFILE_FILE = "profile.json";
 const FOLLOWS_FILE = "follows.json";
@@ -179,6 +180,16 @@ export const signIn = async ({ authKey }) => {
     await storage.writeJson(PROFILE_FILE, user);
   }
   await setSession(trimmed);
+  // If the user has a vault, the recovery key they just entered also
+  // unwraps the master key (recovery wrap is always set at signup).
+  // Non-fatal on failure: signin still succeeds, vault stays locked.
+  if (await heyVault.hasVault()) {
+    try {
+      await heyVault.unlockVaultWithRecovery(trimmed);
+    } catch (err) {
+      console.warn("[hey] vault unlock via recovery key failed", err);
+    }
+  }
   return {
     message: "Signed in successfully",
     user: publicUserShape(user),

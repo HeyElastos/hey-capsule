@@ -21,6 +21,7 @@ import {
   expandKeypair,
 } from "../lib/identity";
 import { setSession } from "../lib/session";
+import * as heyVault from "../lib/vault";
 
 const CREDS_FILE = "passkey-creds.json";
 const CHALLENGE_FILE = "passkey-challenge.json";
@@ -46,7 +47,23 @@ const b64u = {
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
       .replace(/=+$/, ""),
+  decode: (b64uStr) => {
+    const pad = (4 - (b64uStr.length % 4)) % 4;
+    const b64 = b64uStr.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat(pad);
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  },
 };
+
+// Pre-encoded PRF input for the vault — the assertion/attestation
+// extensions are passed as base64url strings via simplewebauthn's
+// optionsJSON interface. Must match what lib/vault.js uses
+// internally (encoded "hey-social-vault-v1").
+const VAULT_PRF_INPUT_B64U = b64u.encode(
+  new TextEncoder().encode("hey-social-vault-v1")
+);
 
 const readCreds = async () => (await storage.readJson(CREDS_FILE)) || [];
 const writeCreds = (creds) => storage.writeJson(CREDS_FILE, creds);
@@ -93,7 +110,22 @@ const buildRegistrationOptions = async ({ name }) => {
       type: "public-key",
       transports: c.transports || [],
     })),
+    extensions: {
+      prf: { eval: { first: VAULT_PRF_INPUT_B64U } },
+    },
   };
+};
+
+// Try to extract the PRF output from a WebAuthn response. simplewebauthn
+// surfaces clientExtensionResults as base64url-encoded strings. Returns a
+// Uint8Array(32) or null when the authenticator didn't produce PRF.
+const prfOutputFromResponse = (resp) => {
+  const first = resp?.clientExtensionResults?.prf?.results?.first;
+  if (!first) return null;
+  try {
+    const bytes = b64u.decode(first);
+    return bytes.length === 32 ? bytes : null;
+  } catch { return null; }
 };
 
 export const passkeySignup = async (name) => {
@@ -135,6 +167,24 @@ export const passkeySignup = async (name) => {
     createdAt: new Date().toISOString(),
   });
   await writeCreds(creds);
+
+  // If the authenticator produced a PRF output, initialize the vault.
+  // Failures are non-fatal: signup completes; vault just isn't set up.
+  // The user can re-enroll a PRF-capable passkey later to enable it.
+  const prfOutput = prfOutputFromResponse(attResp);
+  if (prfOutput) {
+    try {
+      await heyVault.initVault({ prfOutput, recoveryHex: authKey });
+    } catch (err) {
+      console.warn("[hey] vault init failed at signup", err);
+    }
+  } else {
+    console.info(
+      "[hey] passkey enrolled without PRF — vault encryption unavailable. " +
+      "Hardened authenticators (Yubikey 5.7+, Touch ID on macOS 14+, " +
+      "modern Windows Hello, Android 14+) support PRF."
+    );
+  }
 
   return {
     message: "User created successfully",
@@ -194,6 +244,9 @@ export const passkeySignin = async () => {
       type: "public-key",
       transports: c.transports || [],
     })),
+    extensions: {
+      prf: { eval: { first: VAULT_PRF_INPUT_B64U } },
+    },
   };
   const assertion = await startAuthentication({ optionsJSON: options });
   await consumeChallenge();
@@ -203,6 +256,19 @@ export const passkeySignin = async () => {
   // and verify the assertion signature locally.
   const cred = creds.find((c) => c.id === assertion.id);
   if (!cred) throw new Error("Unknown credential");
+
+  // If the assertion produced a PRF output and the user has a vault,
+  // unwrap the master key now so subsequent writeSealed / readSealed
+  // calls work. Non-fatal on failure: signin completes, vault stays
+  // locked.
+  const prfOutput = prfOutputFromResponse(assertion);
+  if (prfOutput && (await heyVault.hasVault())) {
+    try {
+      await heyVault.unlockVaultWithPRF(prfOutput);
+    } catch (err) {
+      console.warn("[hey] vault unlock failed at signin", err);
+    }
+  }
 
   const user = await storage.readJson(PROFILE_FILE);
   if (!user) throw new Error("No profile on this node");

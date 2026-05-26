@@ -36,6 +36,7 @@ import {
   deleteSigningKey,
   ed25519Supported as cryptoEd25519Supported,
 } from "./keystore";
+import * as heyVault from "./vault";
 
 // Module-level sync cache, populated by initSession() at boot or
 // setSession() during signup/sign-in. Read by getDidKey() / getKeypair().
@@ -169,6 +170,9 @@ export const clearSession = async () => {
   clearPubIdentity();
   try { localStorage.removeItem(LEGACY_AUTHKEY_LS); } catch { /* ignore */ }
   await deleteSigningKey().catch(() => { /* IDB may be unavailable */ });
+  // Also wipe the vault master key from memory on signout. The wraps
+  // file on disk is unaffected — a future signin can still unlock it.
+  try { heyVault.lockVault(); } catch { /* ignore */ }
 };
 
 // ── Internal helper ──────────────────────────────────────────────────
