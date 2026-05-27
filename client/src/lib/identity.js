@@ -7,7 +7,10 @@
 // Backend uses Node's built-in crypto. Browser uses @noble/curves/ed25519
 // — same primitive, same wire format.
 
-import { ed25519 } from "@noble/curves/ed25519.js";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
+import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 
 const ED25519_PUB_MULTICODEC = new Uint8Array([0xed, 0x01]);
 const BASE58_ALPHABET =
@@ -160,4 +163,31 @@ export const expandKeypairFromPRF = (prfBytes) => {
     throw new Error("expandKeypairFromPRF: expected Uint8Array(32)");
   }
   return expandKeypair(bytesToHex(prfBytes));
+};
+
+// ── Post-quantum + X25519 derivation (mirrors hey-messenger-capsule) ──
+//
+// Hey derives THREE keypairs from the same 32-byte authKey:
+//   - Ed25519     for signing events (existing)
+//   - X25519      for the classical leg of hybrid E2E
+//   - ML-KEM-768  for the post-quantum leg
+// All deterministic from one authKey, so recovery still uses a single key.
+
+const ML_KEM_INFO = new TextEncoder().encode("hey/ml-kem-768-v1");
+
+export const x25519FromSeed = (seed) => {
+  if (!(seed instanceof Uint8Array) || seed.length !== 32) {
+    throw new Error("x25519FromSeed: seed must be 32 bytes");
+  }
+  return { privateKey: seed, publicKey: x25519.getPublicKey(seed) };
+};
+
+export const mlKemFromSeed = (seed) => {
+  if (!(seed instanceof Uint8Array) || seed.length !== 32) {
+    throw new Error("mlKemFromSeed: seed must be 32 bytes");
+  }
+  const expanded = hkdf(sha256, seed, undefined, ML_KEM_INFO, 64);
+  const { publicKey, secretKey } = ml_kem768.keygen(expanded);
+  expanded.fill(0);
+  return { publicKey, secretKey };
 };

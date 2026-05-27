@@ -24,6 +24,8 @@
 import { storage, peer, ipfs } from "../lib/runtime";
 import { getKeypair, getDidKey } from "../lib/session";
 import { createSignedEvent, verifySignedEvent } from "../lib/events";
+import { encryptToHybrid, decryptHybrid } from "../lib/pqcrypto";
+import { resolveBundle } from "../lib/profile";
 
 const threadIdFor = (didA, didB) => [didA, didB].sort().join("::");
 const dmTopic = (didA, didB) => `hey-v0/dm/${threadIdFor(didA, didB)}`;
@@ -86,23 +88,72 @@ const toUiMessage = (m) => {
     read_at: payload.read_at || null,
     edited_at: payload.edited_at || null,
     deleted_at: payload.deleted_at || null,
+    // True if the message was delivered as a hybrid-PQ envelope and we
+    // decrypted it before storage. Lets the UI render a 🔒 badge.
+    encrypted: m._was_encrypted === true,
   };
 };
 
 // ─── Sign + publish a chat event ───────────────────────────────────
+//
+// For DMs, pass `recipientDid` — if the peer's profile bundle is
+// resolvable, the payload is wrapped in a hybrid-PQ envelope BEFORE
+// signing, so only the recipient (and us, via our own KEM key on
+// decrypt) can read it. The signature still authenticates the sender.
+//
+// Returned event has two extra fields the caller can use:
+//   _was_encrypted: true|false
+//   _plain_payload: the original plaintext payload (always present, so
+//                   the local writeMessage call stores the readable
+//                   version rather than the ciphertext).
+//
+// Group / room events that pass through here without a recipientDid
+// stay transit-only — same threat model as before, badge will reflect.
 
-const signAndPublish = async ({ topic, type, payload }) => {
+const signAndPublish = async ({ topic, type, payload, recipientDid }) => {
   const kp = getKeypair();
   if (!kp) throw new Error("No session — sign in first");
-  const event = await createSignedEvent({ type, payload }, kp);
+
+  let onWirePayload = payload;
+  let encrypted = false;
+
+  if (recipientDid && kp.x25519?.publicKey && kp.kem?.publicKey) {
+    try {
+      const bundle = await resolveBundle(recipientDid);
+      if (bundle?.x25519Pub && bundle?.kemPub) {
+        const env = encryptToHybrid(
+          JSON.stringify(payload),
+          bundle.x25519Pub,
+          bundle.kemPub,
+        );
+        onWirePayload = { enc: env };
+        encrypted = true;
+      }
+    } catch (err) {
+      console.warn("[hey-chat] encrypt failed, falling back to transit-only", err);
+    }
+  }
+
+  const wireEvent = await createSignedEvent(
+    { type, payload: onWirePayload },
+    kp,
+  );
   await peer.publish({
     topic,
-    message: JSON.stringify(event),
-    sender_id: event.sender_did,
-    ts: event.ts,
-    signature: event.signature,
+    message: JSON.stringify(wireEvent),
+    sender_id: wireEvent.sender_did,
+    ts: wireEvent.ts,
+    signature: wireEvent.signature,
   });
-  return event;
+
+  // Locally we want the readable event. Return a shape that lets callers
+  // persist the plaintext payload + the original signature/ts so
+  // toUiMessage continues to surface .signature for UI display.
+  return {
+    ...wireEvent,
+    payload, // plaintext, replaces the on-wire encrypted form
+    _was_encrypted: encrypted,
+  };
 };
 
 // ─── DMs ─────────────────────────────────────────────────────────────
@@ -172,6 +223,7 @@ export const sendMessage = async (_token, peerDid, content, replyTo = null, atta
     topic: dmTopic(myDid, peerDid),
     type: "chat.msg",
     payload,
+    recipientDid: peerDid,
   });
 
   await writeMessage(threadId, msgId, event);
@@ -635,6 +687,32 @@ export const uploadVoice = async (_token, blob, durationMs) => {
 // signature, and writes to local storage so the next listThreads /
 // getThread reads them.
 
+// Try to decrypt a received event. Returns either:
+//   { event: <event-with-decrypted-payload>, encrypted: true }   on success
+//   { event: original_event,                  encrypted: false } if not encrypted
+//   null                                                          on decrypt failure
+// The signature on the returned event won't re-verify (payload changed),
+// but we trust local storage; we already verified before decryption.
+const tryDecryptInbound = (event) => {
+  const env = event?.payload?.enc;
+  if (!env || env.v !== "hpq-1") {
+    return { event, encrypted: false };
+  }
+  const kp = getKeypair();
+  if (!kp?.x25519?.privateKey || !kp?.kem?.secretKey) return null;
+  try {
+    const plaintext = decryptHybrid(env, kp.x25519.privateKey, kp.kem.secretKey);
+    let parsed = plaintext;
+    try { parsed = JSON.parse(plaintext); } catch {}
+    return {
+      event: { ...event, payload: parsed, _was_encrypted: true },
+      encrypted: true,
+    };
+  } catch (err) {
+    return null;
+  }
+};
+
 export const pollInbound = async () => {
   const myDid = getDidKey();
   if (!myDid) return;
@@ -655,10 +733,27 @@ export const pollInbound = async () => {
         try { event = JSON.parse(m.message); } catch { continue; }
         const check = verifySignedEvent(event);
         if (!check.valid) continue;
+        const decoded = tryDecryptInbound(event);
+        if (!decoded) {
+          // Encrypted but we can't read it — persist a stub so the
+          // thread index still updates with timestamps and the user
+          // sees the placeholder.
+          const threadId = threadIdFor(myDid, peerDid);
+          const msgId = event.payload?.id || event.signature.slice(0, 16);
+          await writeMessage(threadId, msgId, {
+            ...event,
+            payload: { id: msgId, content: "🔒 encrypted — no key", _unreadable: true, ts: event.ts },
+            _was_encrypted: true,
+          });
+          idx[peerDid].last_message = "🔒 encrypted";
+          idx[peerDid].ts = event.ts;
+          continue;
+        }
+        const usable = decoded.event;
         const threadId = threadIdFor(myDid, peerDid);
-        const msgId = event.payload?.id || event.signature.slice(0, 16);
-        await writeMessage(threadId, msgId, event);
-        idx[peerDid].last_message = event.payload?.content || "";
+        const msgId = usable.payload?.id || event.signature.slice(0, 16);
+        await writeMessage(threadId, msgId, usable);
+        idx[peerDid].last_message = usable.payload?.content || "";
         idx[peerDid].ts = event.ts;
       }
     } catch { /* topic not joined yet or recv failed — ignore */ }

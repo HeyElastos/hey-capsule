@@ -19,6 +19,7 @@ import AddFriendModal from "../components/AddFriendModal";
 import CreateRoomModal from "../components/CreateRoomModal";
 import ProfilePopover from "../components/ProfilePopover";
 import { resolveMediaSrc } from "../components/SafeMedia";
+import EncryptionBadge from "../components/EncryptionBadge";
 import {
   CloseIcon,
   ImageIcon,
@@ -26,7 +27,6 @@ import {
   PaperPlaneIcon,
   PlayIcon,
   PlusIcon,
-  ShieldCheckIcon,
   StopIcon,
   TrashIcon,
 } from "../components/icons";
@@ -918,13 +918,15 @@ const Chat = () => {
                   </div>
                 </>
               )}
-              <span
-                className="flex items-center gap-1.5 rounded-full bg-amber-400/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300"
-                title="Phase 2: server-attested local mode. Phase 3 will add end-to-end Ed25519 signatures."
-              >
-                <ShieldCheckIcon className="h-3 w-3" />
-                local
-              </span>
+              <EncryptionBadge
+                kind={
+                  isGroup
+                    ? "transit"
+                    : convoMessages.some((m) => m.encrypted)
+                    ? "e2e"
+                    : "transit"
+                }
+              />
             </header>
 
             <div className="flex-1 space-y-4 overflow-y-auto px-4 py-5">

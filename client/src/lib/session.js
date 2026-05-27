@@ -29,7 +29,7 @@
 // we keep the legacy localStorage path with a console.warn — better
 // than refusing to load.
 
-import { expandKeypair } from "./identity";
+import { expandKeypair, x25519FromSeed, mlKemFromSeed } from "./identity";
 import {
   saveSeedAsSigningKey,
   loadSigningKey,
@@ -50,6 +50,12 @@ const LEGACY_AUTHKEY_LS = "hey-capsule-session";
 // It lets us know the DID across reloads without touching IDB on every
 // getDidKey() call.
 const PUBKEY_LS = "hey-public-identity";
+
+// X25519 + ML-KEM-768 keypairs for hybrid PQ E2E. Stored as plain bytes
+// because Web Crypto exposes neither ML-KEM nor non-extractable X25519
+// yet. XSS on this origin could exfiltrate them — documented in the
+// architecture notes. Ed25519 stays hardened in IDB.
+const PQ_LS = "hey-pq-identity";
 
 const hexToBytes = (hex) => {
   const out = new Uint8Array(hex.length / 2);
@@ -77,11 +83,55 @@ const clearPubIdentity = () => {
 
 // ── Sign-up / sign-in: persist the seed as a non-extractable CryptoKey ──
 
+// Derive + persist the PQ + X25519 keypairs from the same seed.
+// IMPORTANT: must run BEFORE keystore zeroes the seed (saveSeedAsSigningKey
+// scrubs it in place). Caller passes the seed bytes; we return the two
+// extra keypairs to store in `cached`.
+const setupPQKeys = (seed) => {
+  const x = x25519FromSeed(seed);
+  const k = mlKemFromSeed(seed);
+  try {
+    localStorage.setItem(
+      PQ_LS,
+      JSON.stringify({
+        x25519: { pub: bytesToHex(x.publicKey), priv: bytesToHex(x.privateKey) },
+        kem:    { pub: bytesToHex(k.publicKey), priv: bytesToHex(k.secretKey) },
+      }),
+    );
+  } catch {}
+  return { x25519: x, kem: k };
+};
+
+const loadPQKeys = () => {
+  try {
+    const raw = localStorage.getItem(PQ_LS);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    return {
+      x25519: {
+        publicKey: hexToBytes(j.x25519.pub),
+        privateKey: hexToBytes(j.x25519.priv),
+      },
+      kem: {
+        publicKey: hexToBytes(j.kem.pub),
+        secretKey: hexToBytes(j.kem.priv),
+      },
+    };
+  } catch { return null; }
+};
+
+const clearPQKeys = () => {
+  try { localStorage.removeItem(PQ_LS); } catch {}
+};
+
 export const setSession = async (authKey) => {
   if (!authKey) return clearSession();
   // Derive the keypair WITHOUT relying on the keystore (we want the
   // public key + didKey regardless of whether the hardened path works).
   const { seed, publicKey, didKey } = expandKeypair(authKey);
+
+  // Set up PQ + X25519 BEFORE the keystore zeroes `seed` in place.
+  const pq = setupPQKeys(seed);
 
   // Try the hardened path first.
   let privKey = null;
@@ -94,17 +144,24 @@ export const setSession = async (authKey) => {
     }
   }
 
+  const pubBundle = {
+    didKey,
+    pubKeyHex: bytesToHex(publicKey),
+    x25519Pub: bytesToHex(pq.x25519.publicKey),
+    kemPub: bytesToHex(pq.kem.publicKey),
+  };
+
   if (privKey) {
     // Hardened path: cache the handle + pubkey/didKey, drop the seed.
-    cached = { didKey, publicKey, privKey };
-    writePubIdentity({ didKey, pubKeyHex: bytesToHex(publicKey) });
+    cached = { didKey, publicKey, privKey, ...pq };
+    writePubIdentity(pubBundle);
     // Make sure no legacy seed lingers in localStorage.
     try { localStorage.removeItem(LEGACY_AUTHKEY_LS); } catch {}
   } else {
     // Legacy fallback: seed-in-localStorage. Keep noble-compatible
     // shape so legacy events.js path keeps working if anyone hits it.
-    cached = { didKey, publicKey, seed, privKey: null, _legacy: true };
-    writePubIdentity({ didKey, pubKeyHex: bytesToHex(publicKey) });
+    cached = { didKey, publicKey, seed, privKey: null, _legacy: true, ...pq };
+    writePubIdentity(pubBundle);
     try {
       localStorage.setItem(LEGACY_AUTHKEY_LS, JSON.stringify({ authKey }));
     } catch { /* private mode */ }
@@ -124,11 +181,14 @@ export const initSession = async () => {
   // Path 1: hardened key already in IDB.
   const privKey = await loadSigningKey().catch(() => null);
   const pubData = readPubIdentity();
-  if (privKey && pubData && pubData.didKey && pubData.pubKeyHex) {
+  const pq = loadPQKeys();
+  if (privKey && pubData && pubData.didKey && pubData.pubKeyHex && pq) {
     cached = {
       didKey: pubData.didKey,
       publicKey: hexToBytes(pubData.pubKeyHex),
       privKey,
+      x25519: pq.x25519,
+      kem: pq.kem,
     };
     // Ensure no legacy seed remains.
     try { localStorage.removeItem(LEGACY_AUTHKEY_LS); } catch {}
@@ -168,6 +228,7 @@ export const getDidKey = () => cached?.didKey || null;
 export const clearSession = async () => {
   cached = null;
   clearPubIdentity();
+  clearPQKeys();
   try { localStorage.removeItem(LEGACY_AUTHKEY_LS); } catch { /* ignore */ }
   await deleteSigningKey().catch(() => { /* IDB may be unavailable */ });
   // Also wipe the vault master key from memory on signout. The wraps
