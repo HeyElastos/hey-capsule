@@ -19,6 +19,7 @@ import {
 } from "../lib/identity";
 import { storage, peer, ipfs } from "../lib/runtime";
 import { setSession, clearSession, getKeypair } from "../lib/session";
+import { deleteSigningKey } from "../lib/keystore";
 import { createSignedEvent } from "../lib/events";
 import { readSharedIdentity, writeSharedIdentity } from "../lib/shell";
 import * as heyVault from "../lib/vault";
@@ -225,8 +226,42 @@ export const signIn = async ({ authKey }) => {
 // ─── Profile read / update / delete ─────────────────────────────────
 
 export const deleteAccount = async () => {
-  await storage.remove(PROFILE_FILE);
-  await clearSession();
+  // Scrub every layer the identity lives on. Best-effort: any single
+  // step failing must not block the others, so the user can retry and
+  // still get a clean wipe.
+  const tryDo = (label, fn) =>
+    Promise.resolve()
+      .then(fn)
+      .catch((err) => console.warn(`[hey] deleteAccount: ${label} failed`, err));
+
+  // 1) Server-side: Hey profile + follows + vault wraps + passkey creds
+  //    + shared cross-app identity. Each of these is in localhost storage
+  //    under the runtime.
+  await tryDo("remove Hey profile",   () => storage.remove(PROFILE_FILE));
+  await tryDo("remove follows",       () => storage.remove(FOLLOWS_FILE));
+  await tryDo("remove vault wraps",   () => storage.remove("vault-wraps.json"));
+  await tryDo("remove passkey creds", () => storage.remove("passkey-creds.json"));
+  await tryDo("remove shared identity",
+    () => storage.remove("../../Identity/profile.json"));
+
+  // 2) Client-side: IndexedDB-stored signing key (non-extractable
+  //    CryptoKey persists across cookie clears; only Clear All Site
+  //    Data or this explicit delete wipes it).
+  await tryDo("delete signing key", deleteSigningKey);
+
+  // 3) Vault state cached in module-level memory.
+  await tryDo("lock vault", () => heyVault.lockVault?.());
+
+  // 4) Bearer + capability + runtime tokens in sessionStorage.
+  try {
+    sessionStorage.removeItem("hey-runtime-token");
+    sessionStorage.removeItem("hey-capability-tokens");
+    sessionStorage.removeItem("hey-capsule-token-cache");
+  } catch (_) { /* private mode etc. */ }
+
+  // 5) Local profile state (the in-memory hook + the localStorage cache).
+  await tryDo("clear session", clearSession);
+
   return { message: "Account deleted" };
 };
 
