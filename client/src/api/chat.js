@@ -581,7 +581,17 @@ export const uploadAttachments = async (_token, files, onProgress) => {
     const f = files[i];
     const { blob, format } = await transcoder.processForUpload(f);
     const resp = await ipfs.addBytes(blob, f.name || "file", true);
+    // Defensive: if ipfs.addBytes didn't return a CID (auth failed, kubo
+    // down, provider not registered, etc.), throw a clear error here
+    // instead of letting downstream code construct 'elastos://undefined'
+    // and crash later with an opaque 'n is not a function'.
     const cid = resp?.data?.cid || resp?.cid;
+    if (!cid || typeof cid !== "string") {
+      throw new Error(
+        `IPFS add_bytes returned no CID for ${f.name || "attachment"}` +
+        ` (response: ${JSON.stringify(resp).slice(0, 200)})`
+      );
+    }
     results.push({
       url: `elastos://${cid}`,
       cid,
@@ -604,6 +614,12 @@ export const uploadVoice = async (_token, blob, durationMs) => {
   });
   const resp = await ipfs.addBytes(optimized, `voice.${format || "webm"}`, true);
   const cid = resp?.data?.cid || resp?.cid;
+  if (!cid || typeof cid !== "string") {
+    throw new Error(
+      `IPFS add_bytes returned no CID for voice clip` +
+      ` (response: ${JSON.stringify(resp).slice(0, 200)})`
+    );
+  }
   return {
     url: `elastos://${cid}`,
     cid,
