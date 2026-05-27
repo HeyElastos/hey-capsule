@@ -92,6 +92,7 @@ const saveTokenStore = (m) => {
 };
 
 const tokenCache = loadTokenStore();
+const cacheKey = (resource, action) => `${action}::${resource}`;
 
 // Shell sessions don't need a token; the runtime trusts them. For
 // dev/local mode the placeholder is fine. When we acquire a real
@@ -102,9 +103,11 @@ export const setSessionToken = (token) => {
   fallbackToken = token || "capsule-session";
 };
 
-// Resource → token (or fallback). Per-resource granularity is what the
-// runtime expects; mapping schemes → broad resources gives sane defaults.
-const tokenForResource = (resource) => tokenCache[resource] || fallbackToken;
+// Resource+action → token (or fallback). The runtime's capability
+// validator does exact-action match (Read tokens don't cover Write or
+// vice versa) so the cache must distinguish actions.
+const tokenForResource = (resource, action = "write") =>
+  tokenCache[cacheKey(resource, action)] || fallbackToken;
 
 const schemeToResource = (scheme) => {
   // Conservative default: ask for write on the whole scheme namespace.
@@ -150,30 +153,44 @@ const requestCapabilityToken = async (resource, action = "write") => {
   return null; // timed out
 };
 
-// Public helper: get a token for a resource, cached. Idempotent.
+// Public helper: get a token for a (resource, action) pair, cached.
+// Idempotent. Auto-acquires from /api/capability/request if missing
+// (the runtime auto-grants any resource declared in the capsule's
+// manifest, so this is usually a single round-trip on first use).
 export const getCapabilityToken = async (resource, action = "write") => {
-  if (tokenCache[resource]) return tokenCache[resource];
+  const key = cacheKey(resource, action);
+  if (tokenCache[key]) return tokenCache[key];
   try {
     const token = await requestCapabilityToken(resource, action);
     if (token) {
-      tokenCache[resource] = token;
+      tokenCache[key] = token;
       saveTokenStore(tokenCache);
       return token;
     }
   } catch (err) {
-    // Transport error or runtime not exposing capability flow — fall
-    // back to the placeholder so calls still work in trusted-session
-    // mode. The user will see the real auth fail later if needed.
     console.warn("[hey] capability acquire failed; using fallback", err);
   }
   return fallbackToken;
 };
 
-const authHeaders = (resource) => {
-  const token = resource ? tokenForResource(resource) : fallbackToken;
+const authHeaders = (resource, action = "write") => {
+  const token = resource ? tokenForResource(resource, action) : fallbackToken;
   const headers = { ...bearerHeaders() };
   if (token) headers["X-Capability-Token"] = token;
   return headers;
+};
+
+// Storage path → capability resource URI. The localhost:// scheme is the
+// canonical form the runtime uses for permission patterns.
+const pathToResource = (path) => `localhost://${path.replace(/^\/+/, "")}`;
+
+// One-call helper: ensure we hold a capability for (resource, action),
+// then return the X-Capability-Token + Authorization header pair ready
+// to spread into a fetch options.headers object. Used by every storage
+// call so the validator's exact-action match always finds a token.
+const ensureAuthedHeaders = async (resource, action) => {
+  await getCapabilityToken(resource, action);
+  return authHeaders(resource, action);
 };
 
 // ─── Provider calls ────────────────────────────────────────────────
@@ -403,16 +420,19 @@ export const did = {
 const storagePath = (relative) =>
   `${STORAGE_BASE}/${(relative || "").replace(/^\/+/, "")}`;
 
-// localhost-provider calls all share one broad resource for cap-token purposes.
-const LOCALHOST_RESOURCE = "localhost://*";
+// Build the localhost:// resource URI the runtime uses for capability
+// matching from a path under STORAGE_BASE.
+const storageResource = (relative) => {
+  const tail = `Users/self/.AppData/LocalHost/Hey/${(relative || "").replace(/^\/+/, "")}`;
+  return `localhost://${tail}`;
+};
 
 export const storage = {
-  // Read a path. Returns parsed JSON, raw text, or Uint8Array (caller hints).
+  // Read a path. Returns parsed JSON or null on 404.
   readJson: async (path) => {
-    const resp = await fetch(storagePath(path), {
-      credentials: "include",
-      headers: authHeaders(LOCALHOST_RESOURCE),
-    });
+    const resource = storageResource(path);
+    const headers = await ensureAuthedHeaders(resource, "read");
+    const resp = await fetch(storagePath(path), { credentials: "include", headers });
     if (resp.status === 404) return null;
     if (!resp.ok)
       throw new RuntimeError(`localhost GET ${path}: HTTP ${resp.status}`);
@@ -420,10 +440,15 @@ export const storage = {
   },
 
   writeJson: async (path, value) => {
+    const resource = storageResource(path);
+    const headers = {
+      "Content-Type": "application/json",
+      ...(await ensureAuthedHeaders(resource, "write")),
+    };
     const resp = await fetch(storagePath(path), {
       method: "PUT",
       credentials: "include",
-      headers: { "Content-Type": "application/json", ...authHeaders(LOCALHOST_RESOURCE) },
+      headers,
       body: JSON.stringify(value),
     });
     if (!resp.ok) {
@@ -437,10 +462,12 @@ export const storage = {
   },
 
   remove: async (path) => {
+    const resource = storageResource(path);
+    const headers = await ensureAuthedHeaders(resource, "delete");
     const resp = await fetch(storagePath(path), {
       method: "DELETE",
       credentials: "include",
-      headers: authHeaders(LOCALHOST_RESOURCE),
+      headers,
     });
     if (!resp.ok && resp.status !== 404)
       throw new RuntimeError(`localhost DELETE ${path}: HTTP ${resp.status}`);
@@ -448,9 +475,11 @@ export const storage = {
   },
 
   list: async (path) => {
+    const resource = storageResource(path);
+    const headers = await ensureAuthedHeaders(resource, "read");
     const resp = await fetch(`${storagePath(path)}?list=true`, {
       credentials: "include",
-      headers: authHeaders(LOCALHOST_RESOURCE),
+      headers,
     });
     if (resp.status === 404) return [];
     if (!resp.ok)

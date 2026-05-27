@@ -46,11 +46,24 @@ const SHELL_MARKER_PATH =
 const SHARED_IDENTITY_PATH =
   `${API_BASE}/api/localhost/Users/self/.AppData/Identity/profile.json`;
 
+// Storage endpoints require an X-Capability-Token in addition to the
+// session Bearer. Acquire one for the (resource, action) pair via the
+// runtime's auto-grant flow — the manifest declares Identity/* and
+// SystemServices/Shell/* under permissions.storage so the runtime
+// auto-grants immediately. Caller path is /elastos/api/localhost/...;
+// the runtime's permission system uses localhost:// URIs.
+import { getCapabilityToken } from "./runtime";
+
+const pathToResource = (apiPath) =>
+  "localhost://" + apiPath.replace(/^.*?\/api\/localhost\//, "");
+
 const safeGetJson = async (path) => {
   try {
+    const resource = pathToResource(path);
+    const cap = await getCapabilityToken(resource, "read");
     const r = await fetch(path, {
       credentials: "include",
-      headers: bearerHeaders(),
+      headers: { ...bearerHeaders(), "X-Capability-Token": cap },
     });
     if (r.status === 404) return null;
     if (!r.ok) return null;
@@ -62,10 +75,16 @@ const safeGetJson = async (path) => {
 
 const safePutJson = async (path, value) => {
   try {
+    const resource = pathToResource(path);
+    const cap = await getCapabilityToken(resource, "write");
     const r = await fetch(path, {
       method: "PUT",
       credentials: "include",
-      headers: { "Content-Type": "application/json", ...bearerHeaders() },
+      headers: {
+        "Content-Type": "application/json",
+        ...bearerHeaders(),
+        "X-Capability-Token": cap,
+      },
       body: JSON.stringify(value),
     });
     return r.ok;
