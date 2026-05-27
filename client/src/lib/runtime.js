@@ -45,6 +45,30 @@ const PROVIDER_BASE = `${API_BASE}/api/provider`;
 
 const TOKEN_STORE_KEY = "hey-capability-tokens";
 
+// Runtime API session token. The home gateway mints a Capsule-scope
+// session at launch and embeds it in the iframe URL as ?runtime_token=…
+// Read it once on first import; persist in sessionStorage so navigations
+// within the SPA don't drop it after react-router rewrites the URL.
+const RUNTIME_TOKEN_KEY = "hey-runtime-token";
+const RUNTIME_TOKEN = (() => {
+  if (typeof window === "undefined") return null;
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get("runtime_token");
+    if (fromUrl) {
+      sessionStorage.setItem(RUNTIME_TOKEN_KEY, fromUrl);
+      return fromUrl;
+    }
+    return sessionStorage.getItem(RUNTIME_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+})();
+
+// Authorization: Bearer <runtime_token> on every runtime API call —
+// the runtime's auth_middleware rejects requests without this with 401.
+const bearerHeaders = () =>
+  RUNTIME_TOKEN ? { Authorization: `Bearer ${RUNTIME_TOKEN}` } : {};
+
 const loadTokenStore = () => {
   try {
     return JSON.parse(sessionStorage.getItem(TOKEN_STORE_KEY) || "{}");
@@ -82,7 +106,7 @@ const requestCapabilityToken = async (resource, action = "write") => {
   const post = await fetch(apiUrl("/api/capability/request"), {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...bearerHeaders() },
     body: JSON.stringify({ resource, action }),
   });
   if (!post.ok) throw new RuntimeError(`capability/request HTTP ${post.status}`);
@@ -103,7 +127,7 @@ const requestCapabilityToken = async (resource, action = "write") => {
     i++;
     const r = await fetch(
       apiUrl(`/api/capability/request/${encodeURIComponent(initial.request_id)}`),
-      { credentials: "include" }
+      { credentials: "include", headers: bearerHeaders() }
     );
     if (!r.ok) continue;
     const status = await r.json();
@@ -134,7 +158,9 @@ export const getCapabilityToken = async (resource, action = "write") => {
 
 const authHeaders = (resource) => {
   const token = resource ? tokenForResource(resource) : fallbackToken;
-  return token ? { "X-Capability-Token": token } : {};
+  const headers = { ...bearerHeaders() };
+  if (token) headers["X-Capability-Token"] = token;
+  return headers;
 };
 
 // ─── Provider calls ────────────────────────────────────────────────
