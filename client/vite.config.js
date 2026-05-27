@@ -25,6 +25,14 @@ const vidstackJsxLoader = () => ({
 });
 
 export default defineConfig({
+  // Relative asset references so the bundle works under any mount path.
+  // When the runtime serves the capsule at /elastos/apps/hey-social/ on
+  // YunoHost (or /apps/hey-social/ at root), the index.html's
+  // ./assets/index-*.js stays correct without needing a hardcoded base.
+  // Without this, Vite emits /assets/... (root-absolute), which under
+  // YunoHost's subpath mount hits the wrong nginx location → SSOwat
+  // 302 → MIME-type mismatch → blank white React iframe.
+  base: "./",
   plugins: [vidstackJsxLoader(), react()],
   optimizeDeps: {
     include: [
