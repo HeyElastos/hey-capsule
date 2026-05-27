@@ -13,10 +13,18 @@
 //       ← shared identity used by both hey-home and the Hey app, so
 //         the user doesn't sign up twice.
 
+// Subpath-aware prefix — kept in sync with lib/runtime.js's API_BASE so
+// fetch calls below resolve to /elastos/api/... under YunoHost mounts.
+const API_BASE = (() => {
+  if (typeof window === "undefined") return "";
+  const m = window.location.pathname.match(/^(.*?)\/apps\/[^/]+\//);
+  return m ? m[1] : "";
+})();
+
 const SHELL_MARKER_PATH =
-  "/api/localhost/Users/self/.AppData/SystemServices/Shell/active.json";
+  `${API_BASE}/api/localhost/Users/self/.AppData/SystemServices/Shell/active.json`;
 const SHARED_IDENTITY_PATH =
-  "/api/localhost/Users/self/.AppData/Identity/profile.json";
+  `${API_BASE}/api/localhost/Users/self/.AppData/Identity/profile.json`;
 
 const safeGetJson = async (path) => {
   try {

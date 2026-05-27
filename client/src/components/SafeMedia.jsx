@@ -7,12 +7,19 @@ import { useEffect, useState } from "react";
 // under /api/localhost/WebSpaces/Elastos/content/<cid> as a real HTTP
 // resource. Server-mode URLs (/uploads/...) and absolute http(s) pass
 // through unchanged.
+// Match lib/runtime.js so <img src> URLs include the YunoHost subpath.
+const API_BASE = (() => {
+  if (typeof window === "undefined") return "";
+  const m = window.location.pathname.match(/^(.*?)\/apps\/[^/]+\//);
+  return m ? m[1] : "";
+})();
+
 const resolveMediaSrc = (src) => {
   if (typeof src !== "string" || !src.startsWith("elastos://")) return src;
   const rest = src.slice("elastos://".length);
   const [cid, ...path] = rest.split("/");
   const suffix = path.length ? `/${path.join("/")}` : "";
-  return `/api/localhost/WebSpaces/Elastos/content/${encodeURIComponent(cid)}${suffix}`;
+  return `${API_BASE}/api/localhost/WebSpaces/Elastos/content/${encodeURIComponent(cid)}${suffix}`;
 };
 
 // Image that swaps to `fallback` if the source fails to load — including the

@@ -18,8 +18,19 @@
 // that we'd need /api/capability/request → grant flow. For now, prefer the
 // shell-session path.
 
-const STORAGE_BASE = "/api/localhost/Users/self/.AppData/LocalHost/Hey";
-const PROVIDER_BASE = "/api/provider";
+// Install base derived from the iframe's URL (e.g. "/elastos" when the
+// runtime is mounted under YunoHost subpath, "" when at root). The same
+// pattern lives in capsules/home/browser/{hey-runtime,shell-core}.js;
+// keep them in sync.
+const API_BASE = (() => {
+  if (typeof window === "undefined") return "";
+  const m = window.location.pathname.match(/^(.*?)\/apps\/[^/]+\//);
+  return m ? m[1] : "";
+})();
+export const apiUrl = (path) => API_BASE + path;
+
+const STORAGE_BASE = `${API_BASE}/api/localhost/Users/self/.AppData/LocalHost/Hey`;
+const PROVIDER_BASE = `${API_BASE}/api/provider`;
 
 // ── Capability tokens ──────────────────────────────────────────────
 // The runtime's POST /api/capability/request returns either:
@@ -68,7 +79,7 @@ const schemeToResource = (scheme) => {
 // Acquire a capability token for the given resource + action. Returns
 // the token string, null if denied, or throws on transport error.
 const requestCapabilityToken = async (resource, action = "write") => {
-  const post = await fetch("/api/capability/request", {
+  const post = await fetch(apiUrl("/api/capability/request"), {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -91,7 +102,7 @@ const requestCapabilityToken = async (resource, action = "write") => {
     await new Promise((r) => setTimeout(r, delays[Math.min(i, delays.length - 1)]));
     i++;
     const r = await fetch(
-      `/api/capability/request/${encodeURIComponent(initial.request_id)}`,
+      apiUrl(`/api/capability/request/${encodeURIComponent(initial.request_id)}`),
       { credentials: "include" }
     );
     if (!r.ok) continue;
@@ -237,7 +248,7 @@ export const ipfs = {
   // stream without a base64 round-trip.
   gatewayUrl: (cid, path) => {
     const suffix = path ? `/${path.replace(/^\/+/, "")}` : "";
-    return `/api/localhost/WebSpaces/Elastos/content/${encodeURIComponent(cid)}${suffix}`;
+    return `${API_BASE}/api/localhost/WebSpaces/Elastos/content/${encodeURIComponent(cid)}${suffix}`;
   },
 
   pin: (cid) => providerCall("ipfs", "pin", { cid }),
@@ -444,19 +455,19 @@ export const acquireBootCapabilities = async () => {
 
 export const capability = {
   request: ({ resource, action }) =>
-    fetch("/api/capability/request", {
+    fetch(apiUrl("/api/capability/request"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ resource, action }),
     }).then((r) => r.json()),
   status: (id) =>
-    fetch(`/api/capability/request/${encodeURIComponent(id)}`, {
+    fetch(apiUrl(`/api/capability/request/${encodeURIComponent(id)}`), {
       credentials: "include",
       headers: authHeaders(),
     }).then((r) => r.json()),
   list: () =>
-    fetch("/api/capability/list", {
+    fetch(apiUrl("/api/capability/list"), {
       credentials: "include",
       headers: authHeaders(),
     }).then((r) => r.json()),
@@ -466,7 +477,7 @@ export const capability = {
 
 export const session = {
   current: () =>
-    fetch("/api/session", {
+    fetch(apiUrl("/api/session"), {
       credentials: "include",
       headers: authHeaders(),
     }).then((r) => (r.ok ? r.json() : null)),
