@@ -207,6 +207,34 @@ export const passkeySignup = async (name) => {
   });
   await writeCreds(creds);
 
+  // Publish to the shared-identity path so any other capsule on this
+  // node (hey-home shell, companion apps) sees the user as already
+  // signed up — same contract as classic signUp(). Without this the
+  // home shell's lock screen reads an empty Identity/profile.json
+  // every boot and falls through to the signup wizard, treating the
+  // user as new on every cookie clear / incognito session.
+  try {
+    const { writeSharedIdentity } = await import("../lib/shell");
+    await writeSharedIdentity({
+      name: user.name,
+      didKey,
+      recoveryKeyHash: authKeyHash,
+      passkeys: [
+        {
+          id: attResp.id,
+          publicKey: attResp.response.publicKey,
+          userHandle: challenge.userHandleB64,
+          transports: attResp.response.transports || [],
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      createdAt: new Date().toISOString(),
+      createdBy: "hey",
+    });
+  } catch (err) {
+    console.warn("[hey] writeSharedIdentity failed at passkey signup", err);
+  }
+
   // If the authenticator produced a PRF output, HKDF-derive the vault
   // key from it and initialize the vault. Failures are non-fatal:
   // signup completes; vault just isn't set up. The user can re-enroll
