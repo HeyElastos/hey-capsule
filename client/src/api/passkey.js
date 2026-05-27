@@ -279,15 +279,36 @@ export const passkeyAttach = async () => {
   const attResp = await startRegistration({ optionsJSON: options });
   const challenge = await consumeChallenge();
   const creds = await readCreds();
-  creds.push({
+  const newCred = {
     id: attResp.id,
     publicKey: attResp.response.publicKey,
     userHandle: challenge?.userHandleB64,
     transports: attResp.response.transports || [],
     counter: 0,
     createdAt: new Date().toISOString(),
-  });
+  };
+  creds.push(newCred);
   await writeCreds(creds);
+
+  // Mirror the new passkey into the shared identity so the home
+  // shell's lock screen can show "Sign in with passkey" for this
+  // user. Without this, recovery-key users who later attach a passkey
+  // only get the PIN/recovery path on the lock screen. Non-fatal on
+  // failure: the attach itself succeeded.
+  try {
+    const { readSharedIdentity, writeSharedIdentity } = await import("../lib/shell");
+    const shared = await readSharedIdentity().catch(() => null);
+    if (shared?.didKey) {
+      const existing = (shared.passkeys || []).filter((p) => p.id !== newCred.id);
+      await writeSharedIdentity({
+        ...shared,
+        passkeys: [...existing, newCred],
+      });
+    }
+  } catch (err) {
+    console.warn("[hey] writeSharedIdentity failed at passkey attach", err);
+  }
+
   return { credential: { id: attResp.id }, count: creds.length };
 };
 
