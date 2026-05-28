@@ -1,31 +1,43 @@
 // Runtime API client — Hey's browser-side wrapper around the Elastos Runtime's
-// HTTP surface. Replaces axios calls to Hey's Express backend when the SPA
-// is running inside a WASM capsule.
+// HTTP surface.
 //
-// Three endpoint families matter:
+// This file is the SINGLE adapter between Hey and the runtime. Everything
+// downstream of it (api/auth.js, api/chat.js, lib/vault.js, lib/shell.js,
+// components) talks only to the exports here — when upstream rev's, this
+// file is the only one that needs editing. See:
+//   ../../../../elastos-runtime-ynh/docs/HEY_MODULAR_ARCHITECTURE.md
 //
-//   POST /api/provider/:scheme/:op  — capability-gated proxy to any provider.
-//     Carrier ops live under :scheme=peer (gossip_send/recv/join/leave/etc.),
-//     IPFS under :scheme=ipfs (add_bytes/cat/pin/etc.),
-//     DID resolve+sign+verify under :scheme=did.
+// Storage strategy (adapter pattern, version-resilient):
 //
-//   GET/PUT/DELETE /api/apps/hey-social/storage/*path  — principal-scoped
-//     storage CRUD for third-party app capsules. Each PUT lands at
-//     localhost://Users/<sha256(principal)[:24]>/<path> on disk, so the
-//     filesystem root is shared with any other capsule launched under the
-//     same user (cross-capsule shared identity). Auth is the launch
-//     envelope (x-elastos-home-token header), NOT the runtime bearer.
-//     v0.3 added this via scripts/patches/0002-capsule-principal-storage.patch
-//     in the YunoHost build; v0.3's stock /api/localhost/Users/* rejects
-//     third-party callers.
+//   Hey makes one logical call (e.g. storage.readJson("profile.json"))
+//   and the adapter picks the route shape that works against the runtime
+//   it's actually talking to. Two shapes are supported:
 //
-//   POST /api/apps/hey-social/runtime-token  — trades the home_token launch
-//     envelope for a real session bearer. Required for /api/capability/*
-//     and /api/provider/* which still go through the bearer-gated middleware.
-//     Added by scripts/patches/0001-capsule-runtime-token.patch.
+//     1. patch-0002 route   GET/PUT/DELETE /api/apps/:capsule/storage/*
+//        v0.3 + scripts/patches/0002-capsule-principal-storage.patch.
+//        Auths off the launch envelope (x-elastos-home-token).
 //
-// Auth: capability tokens via X-Capability-Token header for provider calls;
-// launch envelope via x-elastos-home-token header for storage calls.
+//     2. upstream-native    GET/PUT/DELETE /api/localhost/Users/self/*
+//        v0.2 + any future upstream that restores third-party access.
+//        Auths off the bearer minted by patch 0001's runtime-token
+//        exchange. v0.3 stock rejects this for third-party callers via
+//        storage::reject_principal_root_storage_path; patch 0002
+//        exists because of that rejection.
+//
+//   The adapter tries (1) first, memoizes the working shape, falls back
+//   to (2) on 401/403/404. Capsule.json declares permissions for BOTH
+//   shapes so either works as far as the manifest check is concerned.
+//
+// Other endpoint families (also adapter-stable):
+//
+//   POST /api/provider/:scheme/:op           — capability-gated provider proxy
+//   POST /api/apps/:capsule/runtime-token    — bearer exchange (patch 0001)
+//   POST /api/capability/request             — capability auto-grant
+//
+// Auth headers used by this file:
+//   - Authorization: Bearer <runtime_token>   for provider + capability calls
+//   - X-Capability-Token: <cap>               for provider calls
+//   - x-elastos-home-token: <launch-envelope> for the patch-0002 storage route
 
 // Install base derived from the iframe's URL (e.g. "/elastos" when the
 // runtime is mounted under YunoHost subpath, "" when at root). The same
@@ -43,8 +55,11 @@ export const apiUrl = (path) => API_BASE + path;
 // /api/apps/:capsule/{runtime-token,storage}.
 const CAPSULE_ID = "hey-social";
 
-const STORAGE_BASE = `${API_BASE}/api/apps/${CAPSULE_ID}/storage/Hey`;
-const SHARED_STORAGE_BASE = `${API_BASE}/api/apps/${CAPSULE_ID}/storage`;
+// Per-capsule sub-namespace for files inside this app's "private" storage.
+// Under the patch-0002 route this becomes the first URL segment after
+// /storage/; under the legacy route it lives inside .AppData/LocalHost/.
+const PRIVATE_NAMESPACE = "Hey";
+
 const PROVIDER_BASE = `${API_BASE}/api/provider`;
 
 // ── Capability tokens ──────────────────────────────────────────────
@@ -512,28 +527,107 @@ export const did = {
   resolve: (did) => providerCall("did", "resolve", { did }),
 };
 
-// ─── Principal-scoped storage CRUD ─────────────────────────────────
+// ─── Storage adapter ───────────────────────────────────────────────
 //
-// Routes through /api/apps/hey-social/storage/* (patch 0002). Each
-// PUT lands at localhost://Users/<sha256(principal)[:24]>/<suffix>
-// on disk. Two app capsules launched under the same user share the
-// same root, so cross-capsule shared paths (.AppData/Identity/*)
-// work the way v0.2's /api/localhost/Users/self/* did.
+// One dispatch helper, two route shapes (see file header). The shape
+// that works against the current runtime is detected on first call and
+// memoized in sessionStorage so subsequent requests skip the probe.
 //
-// Path segments must not contain ".", "..", or "\". The route handler
-// validates this and returns 400 if violated.
+// Both shapes resolve to the same on-disk file under the launching
+// user's principal root, so a write under one shape is readable under
+// the other if the runtime ever flips between them.
+//
+// Path semantics:
+//   storage.readJson("profile.json")
+//     →  "Hey/profile.json"             (private, namespaced under Hey/)
+//   sharedStorage.readJson(".AppData/Identity/profile.json")
+//     →  ".AppData/Identity/profile.json"  (shared with other capsules)
+//
+// Route translation:
+//   "Hey/<file>"                  patch-0002  /api/apps/hey-social/storage/Hey/<file>
+//                                 legacy      /api/localhost/Users/self/.AppData/LocalHost/Hey/<file>
+//   ".AppData/<rest>"             patch-0002  /api/apps/hey-social/storage/.AppData/<rest>
+//                                 legacy      /api/localhost/Users/self/.AppData/<rest>
 
-const storagePath = (relative) =>
-  `${STORAGE_BASE}/${(relative || "").replace(/^\/+/, "")}`;
+const ROUTE_MODE_KEY = "hey-storage-route-mode";
 
-// Hey-private storage. Bare relative path → localhost://Users/<hash>/Hey/<path>.
-// e.g. "profile.json" → localhost://Users/<hash>/Hey/profile.json
+// 'patch-0002' | 'legacy' | null (unknown — will probe on first call)
+let storageRouteMode = (() => {
+  if (typeof window === "undefined") return null;
+  try { return sessionStorage.getItem(ROUTE_MODE_KEY) || null; } catch { return null; }
+})();
+
+const setRouteMode = (mode) => {
+  storageRouteMode = mode;
+  try { sessionStorage.setItem(ROUTE_MODE_KEY, mode); } catch (_) {}
+};
+
+const clean = (s) => (s || "").replace(/^\/+/, "");
+
+// Build the URL + headers pair for a given (mode, suffix). The suffix
+// is the path under the principal root: either "Hey/foo.json" (private)
+// or ".AppData/Identity/profile.json" (shared) — both shapes are valid.
+const buildRequest = (mode, suffix) => {
+  const s = clean(suffix);
+  if (mode === "patch-0002") {
+    return {
+      url: `${API_BASE}/api/apps/${CAPSULE_ID}/storage/${s}`,
+      headers: launchEnvelopeHeaders(),
+    };
+  }
+  // legacy: Hey/<file> → .AppData/LocalHost/Hey/<file>;
+  //         .AppData/<rest> stays as .AppData/<rest>
+  const legacySuffix = s.startsWith(`${PRIVATE_NAMESPACE}/`)
+    ? `.AppData/LocalHost/${s}`
+    : s;
+  return {
+    url: `${API_BASE}/api/localhost/Users/self/${legacySuffix}`,
+    headers: bearerHeaders(),
+  };
+};
+
+// Dispatch a single storage request. On the first call (mode === null)
+// we probe patch-0002 first since that's the v0.3+ shape; on 401/403/404
+// we fall back to legacy and remember the working mode.
+const dispatchStorage = async (suffix, init = {}) => {
+  // Bearer fallback path needs the runtime token; wait for the exchange.
+  await bearerReady.catch(() => false);
+
+  const attempt = async (mode) => {
+    const { url, headers } = buildRequest(mode, suffix);
+    const finalHeaders = { ...init.headers, ...headers };
+    return fetch(url, { ...init, credentials: "include", headers: finalHeaders });
+  };
+
+  if (storageRouteMode) {
+    return attempt(storageRouteMode);
+  }
+  // Try patch-0002 first.
+  let resp = await attempt("patch-0002");
+  if (resp.status === 401 || resp.status === 403 || resp.status === 404) {
+    // Could be "patch not applied" OR "this object doesn't exist on the
+    // patch-0002 route." Probe legacy with the same suffix; if legacy
+    // responds 2xx/404, lock to legacy. If legacy also errors with
+    // 401/403, stay on patch-0002 (likely an auth issue, not a route
+    // issue) and let the caller see the original error.
+    const legacyResp = await attempt("legacy");
+    if (legacyResp.status < 500 && legacyResp.status !== 401 && legacyResp.status !== 403) {
+      setRouteMode("legacy");
+      return legacyResp;
+    }
+    setRouteMode("patch-0002");
+    return resp;
+  }
+  setRouteMode("patch-0002");
+  return resp;
+};
+
+// Public storage surface, identical across both route shapes. Path
+// argument is the suffix under the per-capsule namespace (e.g.
+// "profile.json", "posts/by-id/<id>.json").
 export const storage = {
   readJson: async (path) => {
-    const resp = await fetch(storagePath(path), {
-      credentials: "include",
-      headers: launchEnvelopeHeaders(),
-    });
+    const resp = await dispatchStorage(`${PRIVATE_NAMESPACE}/${clean(path)}`);
     if (resp.status === 404) return null;
     if (!resp.ok)
       throw new RuntimeError(`storage GET ${path}: HTTP ${resp.status}`);
@@ -541,14 +635,9 @@ export const storage = {
   },
 
   writeJson: async (path, value) => {
-    const headers = {
-      "Content-Type": "application/json",
-      ...launchEnvelopeHeaders(),
-    };
-    const resp = await fetch(storagePath(path), {
+    const resp = await dispatchStorage(`${PRIVATE_NAMESPACE}/${clean(path)}`, {
       method: "PUT",
-      credentials: "include",
-      headers,
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(value),
     });
     if (!resp.ok) {
@@ -562,10 +651,8 @@ export const storage = {
   },
 
   remove: async (path) => {
-    const resp = await fetch(storagePath(path), {
+    const resp = await dispatchStorage(`${PRIVATE_NAMESPACE}/${clean(path)}`, {
       method: "DELETE",
-      credentials: "include",
-      headers: launchEnvelopeHeaders(),
     });
     if (!resp.ok && resp.status !== 404)
       throw new RuntimeError(`storage DELETE ${path}: HTTP ${resp.status}`);
@@ -573,9 +660,20 @@ export const storage = {
   },
 
   list: async (path) => {
-    const resp = await fetch(`${storagePath(path)}?list=true`, {
+    // Both routes support ?list=true at the directory URL.
+    const suffix = `${PRIVATE_NAMESPACE}/${clean(path)}`;
+    // Build the URL via the dispatcher's helper so the route mode is
+    // honored; we can't pass query params through buildRequest cleanly,
+    // so we do the dispatch + then append the query string.
+    const probe = await dispatchStorage(suffix);
+    if (probe.status === 404) {
+      // If the listing returns 404 against an empty directory, fall through.
+    }
+    // Re-issue with ?list=true on the same route now that mode is set.
+    const { url, headers } = buildRequest(storageRouteMode || "patch-0002", suffix);
+    const resp = await fetch(`${url}?list=true`, {
       credentials: "include",
-      headers: launchEnvelopeHeaders(),
+      headers,
     });
     if (resp.status === 404) return [];
     if (!resp.ok)
@@ -584,17 +682,12 @@ export const storage = {
   },
 };
 
-// Shared-namespace storage (paths outside the Hey/ prefix). Used for
-// cross-capsule files like .AppData/Identity/profile.json that the
-// home shell and other capsules under the same principal can read.
-// Caller passes the full suffix under the principal root.
+// Shared-namespace storage. Used for cross-capsule paths like
+// .AppData/Identity/profile.json that other capsules under the same
+// principal can read. Suffix is taken as-is (no Hey/ prefix).
 export const sharedStorage = {
   readJson: async (suffix) => {
-    const url = `${SHARED_STORAGE_BASE}/${suffix.replace(/^\/+/, "")}`;
-    const resp = await fetch(url, {
-      credentials: "include",
-      headers: launchEnvelopeHeaders(),
-    });
+    const resp = await dispatchStorage(suffix);
     if (resp.status === 404) return null;
     if (!resp.ok)
       throw new RuntimeError(`sharedStorage GET ${suffix}: HTTP ${resp.status}`);
@@ -602,15 +695,9 @@ export const sharedStorage = {
   },
 
   writeJson: async (suffix, value) => {
-    const url = `${SHARED_STORAGE_BASE}/${suffix.replace(/^\/+/, "")}`;
-    const headers = {
-      "Content-Type": "application/json",
-      ...launchEnvelopeHeaders(),
-    };
-    const resp = await fetch(url, {
+    const resp = await dispatchStorage(suffix, {
       method: "PUT",
-      credentials: "include",
-      headers,
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(value),
     });
     if (!resp.ok) {
@@ -624,16 +711,26 @@ export const sharedStorage = {
   },
 
   remove: async (suffix) => {
-    const url = `${SHARED_STORAGE_BASE}/${suffix.replace(/^\/+/, "")}`;
-    const resp = await fetch(url, {
-      method: "DELETE",
-      credentials: "include",
-      headers: launchEnvelopeHeaders(),
-    });
+    const resp = await dispatchStorage(suffix, { method: "DELETE" });
     if (!resp.ok && resp.status !== 404)
       throw new RuntimeError(`sharedStorage DELETE ${suffix}: HTTP ${resp.status}`);
     return true;
   },
+};
+
+// Test/debug helper — force a specific route mode and skip probing.
+// Intended for unit tests and operator debugging; production code should
+// never call this.
+export const _setStorageRouteMode = (mode) => {
+  if (mode !== "patch-0002" && mode !== "legacy" && mode !== null) {
+    throw new Error(`_setStorageRouteMode: invalid mode ${mode}`);
+  }
+  if (mode === null) {
+    storageRouteMode = null;
+    try { sessionStorage.removeItem(ROUTE_MODE_KEY); } catch (_) {}
+  } else {
+    setRouteMode(mode);
+  }
 };
 
 // ── Boot-time capability acquisition ──────────────────────────────
