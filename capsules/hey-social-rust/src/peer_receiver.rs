@@ -79,12 +79,56 @@ async fn poll_once(my_did: &str) -> Result<(), String> {
     let _ = peer::join_topic(&follow_topic).await;
     consume_topic(&follow_topic, &consumer_id, Some(my_did)).await;
 
-    // 4. Our DM inbox — every sender publishes to hey-v0/dm/<our_did>.
+    // 4. Legacy DM inbox — back-compat for contacts created before v2
+    //    per-pair queues landed. New contacts use hey-v0/q/<rnd> (5).
     let dm_topic = format!("hey-v0/dm/{my_did}");
     let _ = peer::join_topic(&dm_topic).await;
     consume_topic(&dm_topic, &consumer_id, Some(my_did)).await;
 
+    // 5. Metadata-safe per-pair DM queues. Each v2 contact gets a
+    //    256-bit random topic; the wire entries are sealed-sender
+    //    envelopes (no outer signature, no DID at provider level), so
+    //    they take a different decode path from `from_wire_string`.
+    for (topic, consumer) in dms::my_v2_topics().await {
+        let _ = peer::join_topic(&topic).await;
+        consume_v2_queue(&topic, &consumer).await;
+    }
+
     Ok(())
+}
+
+/// Pull pending entries from a v2 per-pair queue topic. Entries are
+/// NOT SignedEvents — they're `{ type: "dm.v2", envelope }` shapes.
+/// We hand each wire string to dms::receive_v2_wire which decrypts +
+/// verifies the inner sig.
+async fn consume_v2_queue(topic: &str, consumer_id: &str) {
+    let args = peer::RecvArgs {
+        topic,
+        limit: RECV_LIMIT,
+        consumer_id,
+        // We intentionally do NOT set skip_sender_id here — v2 sender_ids
+        // are random per-contact pseudonyms that even we don't track
+        // server-side; the inner signature path will drop our own
+        // loopback if it ever happens.
+        skip_sender_id: None,
+    };
+    let resp = match peer::recv(args).await {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let Some(arr) = resp.get("messages").and_then(|m| m.as_array()).cloned() else {
+        return;
+    };
+    for entry in arr {
+        let Some(wire) = entry.get("message").and_then(|m| m.as_str()) else {
+            continue;
+        };
+        if let Err(e) = dms::receive_v2_wire(topic, wire).await {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "[hey-social-rust] v2 dm consume: {e}"
+            )));
+        }
+    }
 }
 
 async fn consume_topic(topic: &str, consumer_id: &str, my_did: Option<&str>) {

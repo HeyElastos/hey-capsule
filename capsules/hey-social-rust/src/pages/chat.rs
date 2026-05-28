@@ -17,8 +17,9 @@ use wasm_bindgen::JsCast;
 use web_sys::{HtmlInputElement, KeyboardEvent};
 
 use crate::api::dms::{
-    get_expiry_secs, list_contacts, mark_read as mark_dm_read, prune_expired, read_conversation,
-    send_message as send_dm, set_expiry_secs, DmContact, DmMessage,
+    accept_invite, generate_invite, get_expiry_secs, list_contacts, mark_read as mark_dm_read,
+    prune_expired, read_conversation, send_message as send_dm, set_expiry_secs, DmContact,
+    DmMessage,
 };
 use crate::api::groups::{
     list_groups, mark_read as mark_group_read, read_group, read_messages,
@@ -157,23 +158,68 @@ fn ContactList(
     active_group_id: Signal<String>,
 ) -> impl IntoView {
     let modals = use_context::<AppModals>().unwrap_or_default();
-    let new_chat_open = RwSignal::new(false);
-    let new_did_input = RwSignal::new(String::new());
-    let new_chat_error = RwSignal::new(String::new());
+    // Invite panel state. Mode:
+    //   ""        — panel closed
+    //   "gen"     — show generated invite link with copy button
+    //   "paste"   — show textarea for pasting someone else's invite
+    let invite_mode = RwSignal::new(String::new());
+    let invite_label = RwSignal::new(String::new());
+    let invite_link = RwSignal::new(String::new());
+    let invite_paste = RwSignal::new(String::new());
+    let invite_error = RwSignal::new(String::new());
+    let invite_busy = RwSignal::new(false);
     let navigate = use_navigate();
 
-    let start_chat = {
+    let do_generate = move || {
+        if invite_busy.get() {
+            return;
+        }
+        invite_error.set(String::new());
+        invite_busy.set(true);
+        let label = invite_label.get();
+        spawn_local(async move {
+            match generate_invite(&label).await {
+                Ok(link) => {
+                    invite_link.set(link);
+                }
+                Err(e) => invite_error.set(e),
+            }
+            invite_busy.set(false);
+        });
+    };
+
+    let do_accept = {
         let navigate = navigate.clone();
         move || {
-            let d = new_did_input.get().trim().to_string();
-            if !d.starts_with("did:key:z") {
-                new_chat_error.set("Enter a did:key:z… identity.".into());
+            if invite_busy.get() {
                 return;
             }
-            new_chat_error.set(String::new());
-            new_did_input.set(String::new());
-            new_chat_open.set(false);
-            navigate(&format!("/chat/{d}"), NavigateOptions::default());
+            invite_error.set(String::new());
+            invite_busy.set(true);
+            let token = invite_paste.get();
+            let navigate = navigate.clone();
+            spawn_local(async move {
+                match accept_invite(&token).await {
+                    Ok(did) => {
+                        invite_paste.set(String::new());
+                        invite_mode.set(String::new());
+                        navigate(&format!("/chat/{did}"), NavigateOptions::default());
+                    }
+                    Err(e) => invite_error.set(e),
+                }
+                invite_busy.set(false);
+            });
+        }
+    };
+
+    let copy_invite = move |_| {
+        let link = invite_link.get();
+        if link.is_empty() {
+            return;
+        }
+        if let Some(win) = web_sys::window() {
+            let clipboard = win.navigator().clipboard();
+            let _ = clipboard.write_text(&link);
         }
     };
 
@@ -198,64 +244,141 @@ fn ContactList(
                     </button>
                     <button
                         type="button"
-                        on:click=move |_| new_chat_open.update(|v| *v = !*v)
+                        on:click=move |_| {
+                            invite_mode.update(|v| {
+                                *v = if v == "gen" { String::new() } else { "gen".into() };
+                            });
+                            invite_link.set(String::new());
+                            invite_error.set(String::new());
+                        }
                         class="icon-btn-ghost p-2"
-                        aria-label="Start new chat"
-                        title="Start chat with a DID"
+                        aria-label="New invite link"
+                        title="Create invite link (metadata-safe)"
                     >
                         <PlusIcon class="h-4 w-4" />
                     </button>
-                    <span class="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-emerald-400" title="End-to-end encrypted with ML-KEM-768 + X25519 hybrid post-quantum + ChaCha20-Poly1305.">
+                    <button
+                        type="button"
+                        on:click=move |_| {
+                            invite_mode.update(|v| {
+                                *v = if v == "paste" { String::new() } else { "paste".into() };
+                            });
+                            invite_paste.set(String::new());
+                            invite_error.set(String::new());
+                        }
+                        class="icon-btn-ghost p-2"
+                        aria-label="Paste invite link"
+                        title="Accept invite from someone"
+                    >
+                        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="9" y="2" width="6" height="4" rx="1" />
+                            <path d="M9 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3" />
+                        </svg>
+                    </button>
+                    <span class="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-emerald-400" title="Per-pair anonymous queues + sealed-sender envelope. Provider sees only random queue ids and opaque ciphertext; no DIDs in topic names; no plaintext in flight. Hybrid PQ (ML-KEM-768 + X25519 + ChaCha20-Poly1305).">
                         <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <rect x="3" y="11" width="18" height="11" rx="2" />
                             <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                         </svg>
-                        "E2E · PQ"
+                        "E2E · PQ · Sealed"
                     </span>
                 </div>
             </header>
 
-            {move || if new_chat_open.get() {
-                let start_now = start_chat.clone();
-                view! {
-                    <div class="px-4 py-3 border-b border-surface bg-white/5 space-y-2 animate-fade-in">
-                        <input
-                            type="text"
-                            class="frosted-input text-sm"
-                            placeholder="did:key:z… of the person you want to chat with"
-                            prop:value=move || new_did_input.get()
-                            on:input=move |ev: web_sys::Event| {
-                                if let Some(t) = ev.target() {
-                                    if let Ok(i) = t.dyn_into::<HtmlInputElement>() {
-                                        new_did_input.set(i.value());
+            {move || match invite_mode.get().as_str() {
+                "gen" => {
+                    let gen_now = do_generate.clone();
+                    view! {
+                        <div class="px-4 py-3 border-b border-surface bg-white/5 space-y-2 animate-fade-in">
+                            <p class="text-[11px] text-muted leading-snug">
+                                "Mint a one-time invite link. Send it via any channel (SMS, email, in person). When they paste it back, you'll appear in each other's contact lists with a metadata-safe queue. No DIDs go on the wire."
+                            </p>
+                            <input
+                                type="text"
+                                class="frosted-input text-sm"
+                                placeholder="Label (just for you, e.g. \"Bob from work\")"
+                                prop:value=move || invite_label.get()
+                                on:input=move |ev: web_sys::Event| {
+                                    if let Some(t) = ev.target() {
+                                        if let Ok(i) = t.dyn_into::<HtmlInputElement>() {
+                                            invite_label.set(i.value());
+                                        }
                                     }
                                 }
-                            }
-                            on:keydown={
-                                let start_now = start_now.clone();
-                                move |ev: KeyboardEvent| {
-                                    if ev.key() == "Enter" {
-                                        ev.prevent_default();
-                                        start_now();
+                            />
+                            <button
+                                type="button"
+                                on:click=move |_| gen_now()
+                                prop:disabled=move || invite_busy.get()
+                                class="unfrost w-full rounded-full bg-accent hover:bg-amber-300 disabled:opacity-40 text-accent-text font-semibold px-3 py-1.5 text-xs"
+                            >
+                                {move || if invite_busy.get() { "Generating…" } else { "Generate invite link" }}
+                            </button>
+                            {move || {
+                                let link = invite_link.get();
+                                if link.is_empty() { view! { <></> }.into_any() }
+                                else { view! {
+                                    <div class="space-y-1">
+                                        <textarea
+                                            class="frosted-input text-[10px] font-mono w-full h-20 break-all"
+                                            readonly=true
+                                            prop:value=link.clone()
+                                        ></textarea>
+                                        <button
+                                            type="button"
+                                            on:click=copy_invite
+                                            class="unfrost w-full rounded-full bg-white/10 hover:bg-white/20 text-primary font-medium px-3 py-1.5 text-xs"
+                                        >
+                                            "Copy link"
+                                        </button>
+                                    </div>
+                                }.into_any() }
+                            }}
+                            {move || {
+                                let m = invite_error.get();
+                                if m.is_empty() { view! { <></> }.into_any() }
+                                else { view! { <p class="text-xs text-red-400">{m}</p> }.into_any() }
+                            }}
+                        </div>
+                    }.into_any()
+                }
+                "paste" => {
+                    let accept_now = do_accept.clone();
+                    view! {
+                        <div class="px-4 py-3 border-b border-surface bg-white/5 space-y-2 animate-fade-in">
+                            <p class="text-[11px] text-muted leading-snug">
+                                "Paste an invite link someone shared with you. We'll send back a handshake on their queue (encrypted to their pubkeys) and the conversation opens."
+                            </p>
+                            <textarea
+                                class="frosted-input text-[10px] font-mono w-full h-20 break-all"
+                                placeholder="hey-invite:…"
+                                prop:value=move || invite_paste.get()
+                                on:input=move |ev: web_sys::Event| {
+                                    if let Some(t) = ev.target() {
+                                        if let Ok(i) = t.dyn_into::<web_sys::HtmlTextAreaElement>() {
+                                            invite_paste.set(i.value());
+                                        }
                                     }
                                 }
-                            }
-                        />
-                        {move || {
-                            let m = new_chat_error.get();
-                            if m.is_empty() { view! { <></> }.into_any() }
-                            else { view! { <p class="text-xs text-red-400">{m}</p> }.into_any() }
-                        }}
-                        <button
-                            type="button"
-                            on:click=move |_| start_now()
-                            class="unfrost w-full rounded-full bg-accent hover:bg-amber-300 text-accent-text font-semibold px-3 py-1.5 text-xs"
-                        >
-                            "Start chat"
-                        </button>
-                    </div>
-                }.into_any()
-            } else { view! { <></> }.into_any() }}
+                            ></textarea>
+                            <button
+                                type="button"
+                                on:click=move |_| accept_now()
+                                prop:disabled=move || invite_busy.get() || invite_paste.get().trim().is_empty()
+                                class="unfrost w-full rounded-full bg-accent hover:bg-amber-300 disabled:opacity-40 text-accent-text font-semibold px-3 py-1.5 text-xs"
+                            >
+                                {move || if invite_busy.get() { "Accepting…" } else { "Accept invite" }}
+                            </button>
+                            {move || {
+                                let m = invite_error.get();
+                                if m.is_empty() { view! { <></> }.into_any() }
+                                else { view! { <p class="text-xs text-red-400">{m}</p> }.into_any() }
+                            }}
+                        </div>
+                    }.into_any()
+                }
+                _ => view! { <></> }.into_any(),
+            }}
 
             <ul class="flex-1 overflow-y-auto">
                 // Groups first.
