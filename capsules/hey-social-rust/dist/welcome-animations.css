@@ -1,0 +1,55 @@
+/* Onboarding-page background animation — abstract symbols fly across
+   the screen on a stagger so it feels like a continuous parallax.
+   Each symbol uses one of three keyframes (slightly different curves
+   and durations) plus an animation-delay so they don't all sync.
+
+   Symbols are absolutely-positioned via inline `style="top:…; left:…"`
+   on each <svg> element. The animation handles transform only.
+*/
+
+@keyframes fly-across-a {
+  0%   { transform: translate(-120vw, 20vh)  rotate(0deg)   scale(0.85); opacity: 0; }
+  10%  { opacity: 1; }
+  50%  { transform: translate(0, 0)          rotate(180deg) scale(1.05); opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translate( 120vw, -20vh) rotate(360deg) scale(0.85); opacity: 0; }
+}
+
+@keyframes fly-across-b {
+  0%   { transform: translate( 120vw, -30vh) rotate(0deg)   scale(0.9);  opacity: 0; }
+  12%  { opacity: 1; }
+  50%  { transform: translate(0, 0)          rotate(-200deg) scale(1.1);  opacity: 1; }
+  88%  { opacity: 1; }
+  100% { transform: translate(-120vw, 30vh)  rotate(-380deg) scale(0.9);  opacity: 0; }
+}
+
+@keyframes fly-across-c {
+  0%   { transform: translate(-100vw, -10vh) rotate(0deg)   scale(0.75); opacity: 0; }
+  10%  { opacity: 0.9; }
+  50%  { transform: translate(0, 8vh)        rotate(120deg) scale(1);    opacity: 1; }
+  90%  { opacity: 0.9; }
+  100% { transform: translate( 100vw, -15vh) rotate(240deg) scale(0.75); opacity: 0; }
+}
+
+@keyframes glow-drift {
+  0%, 100% { transform: translate(0, 0)      scale(1);    opacity: 0.55; }
+  33%      { transform: translate(40px, -30px) scale(1.1); opacity: 0.85; }
+  66%      { transform: translate(-30px, 40px) scale(0.95); opacity: 0.7; }
+}
+
+.fly-a { animation: fly-across-a 22s cubic-bezier(0.42, 0, 0.58, 1) infinite both; }
+.fly-b { animation: fly-across-b 28s cubic-bezier(0.42, 0, 0.58, 1) infinite both; }
+.fly-c { animation: fly-across-c 26s cubic-bezier(0.42, 0, 0.58, 1) infinite both; }
+.glow-drift { animation: glow-drift 14s ease-in-out infinite; }
+
+/* Color polish — bumps saturation on dark mode so symbols pop more
+   against the body-bg radial gradient. */
+.sym-warm    { color: rgb(251 191 36 / 0.85); filter: drop-shadow(0 0 16px rgba(251, 191, 36, 0.45)); }
+.sym-rose    { color: rgb(244 114 182 / 0.85); filter: drop-shadow(0 0 16px rgba(244, 114, 182, 0.45)); }
+.sym-sky     { color: rgb(125 211 252 / 0.85); filter: drop-shadow(0 0 16px rgba(125, 211, 252, 0.45)); }
+.sym-emerald { color: rgb(110 231 183 / 0.85); filter: drop-shadow(0 0 16px rgba(110, 231, 183, 0.45)); }
+.sym-violet  { color: rgb(196 181 253 / 0.85); filter: drop-shadow(0 0 16px rgba(196, 181, 253, 0.45)); }
+.sym-cyan    { color: rgb(103 232 249 / 0.85); filter: drop-shadow(0 0 16px rgba(103, 232, 249, 0.45)); }
+.sym-lime    { color: rgb(190 242 100 / 0.85); filter: drop-shadow(0 0 16px rgba(190, 242, 100, 0.45)); }
+.sym-orange  { color: rgb(251 146 60 / 0.85);  filter: drop-shadow(0 0 16px rgba(251, 146, 60, 0.45)); }
+.sym-indigo  { color: rgb(165 180 252 / 0.85); filter: drop-shadow(0 0 16px rgba(165, 180, 252, 0.45)); }

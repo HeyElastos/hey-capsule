@@ -32,128 +32,126 @@ pub fn Onboarding() -> impl IntoView {
     }
 }
 
-// Background scene: floating + glowing abstract symbols. Uses the
-// existing animation classes from styles.css — float-shape with
-// shape-{a,b,c,d,gentle}, glow (gradient-pulse), and square-tick
-// (slow 48s rotation). No JS, all CSS keyframes.
+// Background scene: abstract symbols continuously fly across the screen.
+// Each symbol picks one of the .fly-a / .fly-b / .fly-c keyframes from
+// welcome-animations.css and rides a staggered animation-delay so the
+// flow feels endless (a new symbol enters whenever an older one exits).
+// Color is set via the .sym-* classes which also apply a matching glow
+// drop-shadow so symbols pop against the dark radial-gradient body.
 #[component]
 fn OnboardingScene() -> impl IntoView {
     view! {
         <div class="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-            // Three soft gradient blobs — gold / blue / pink — drifting at different rhythms.
+            // Slow-drifting gradient blobs — anchor the scene so the
+            // flying symbols don't feel adrift on flat black.
             <div
-                class="float-shape glow"
+                class="absolute glow-drift"
                 style="top: 8%; left: 6%; width: 380px; height: 380px;
                        background: radial-gradient(circle closest-side at center,
                          rgba(212,184,75,0.65) 0%, rgba(212,184,75,0.22) 40%, transparent 75%);
                        filter: blur(75px);"
             />
             <div
-                class="float-shape glow"
+                class="absolute glow-drift"
                 style="bottom: 6%; right: 4%; width: 480px; height: 480px;
                        background: radial-gradient(circle closest-side at center,
                          rgba(96,165,250,0.55) 0%, rgba(96,165,250,0.18) 40%, transparent 75%);
-                       filter: blur(90px); animation-delay: 1.4s;"
+                       filter: blur(90px); animation-delay: -3s;"
             />
             <div
-                class="float-shape glow"
+                class="absolute glow-drift"
                 style="top: 42%; right: 22%; width: 300px; height: 300px;
                        background: radial-gradient(circle closest-side at center,
                          rgba(244,114,182,0.50) 0%, rgba(244,114,182,0.18) 40%, transparent 75%);
-                       filter: blur(70px); animation-delay: 2.8s;"
+                       filter: blur(70px); animation-delay: -6s;"
             />
             <div
-                class="float-shape glow"
+                class="absolute glow-drift"
                 style="top: 64%; left: 28%; width: 240px; height: 240px;
                        background: radial-gradient(circle closest-side at center,
                          rgba(52,211,153,0.45) 0%, rgba(52,211,153,0.15) 40%, transparent 75%);
-                       filter: blur(60px); animation-delay: 0.6s;"
+                       filter: blur(60px); animation-delay: -9s;"
             />
 
-            // Outline circle (slow float, top-right).
-            <svg
-                class="float-shape shape-a text-amber-700/45 dark:text-accent/65"
-                style="top: 12%; right: 14%; width: 92px; height: 92px;"
-                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"
-            >
+            // Flying symbols. The negative animation-delay starts each
+            // one mid-keyframe so the scene is fully populated on first
+            // paint (no awkward "wait for symbols to enter").
+            <FlyingSymbol class_str="absolute fly-a sym-warm" base="top: 12%; left: 14%; width: 92px; height: 92px;" delay="-2s">
                 <circle cx="12" cy="12" r="10" />
-            </svg>
+            </FlyingSymbol>
 
-            // Triangle.
-            <svg
-                class="float-shape shape-b text-sky-700/50 dark:text-sky-300/75"
-                style="top: 22%; left: 16%; width: 78px; height: 78px;"
-                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"
-            >
+            <FlyingSymbol class_str="absolute fly-b sym-sky" base="top: 22%; left: 16%; width: 78px; height: 78px;" delay="-7s">
                 <path d="M12 3 21 20H3z" />
-            </svg>
+            </FlyingSymbol>
 
-            // Plus.
-            <svg
-                class="float-shape shape-c text-pink-600/55 dark:text-pink-300/75"
-                style="bottom: 22%; left: 10%; width: 62px; height: 62px;"
-                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
-            >
+            <FlyingSymbol class_str="absolute fly-c sym-rose" base="bottom: 22%; left: 10%; width: 64px; height: 64px;" delay="-4s">
                 <path d="M12 5v14M5 12h14" />
-            </svg>
+            </FlyingSymbol>
 
-            // Sparkle / sun.
-            <svg
-                class="float-shape shape-d text-amber-600/75 dark:text-amber-200/85"
-                style="top: 26%; left: 56%; width: 72px; height: 72px;"
-                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"
-            >
+            <FlyingSymbol class_str="absolute fly-a sym-orange" base="top: 26%; left: 56%; width: 76px; height: 76px;" delay="-13s">
                 <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.5 5.5l2.8 2.8M15.7 15.7l2.8 2.8M5.5 18.5l2.8-2.8M15.7 8.3l2.8-2.8" />
-            </svg>
+            </FlyingSymbol>
 
-            // Slow-rotating square.
-            <div
-                class="float-shape shape-c"
-                style="top: 58%; right: 6%; width: 70px; height: 70px; animation-delay: 0.7s;"
-            >
-                <svg class="square-tick text-emerald-700/45 dark:text-emerald-300/70" style="width: 100%; height: 100%;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25">
-                    <rect x="3" y="3" width="18" height="18" rx="3" />
-                </svg>
-            </div>
+            <FlyingSymbol class_str="absolute fly-b sym-emerald" base="top: 58%; right: 16%; width: 84px; height: 84px;" delay="-18s">
+                <rect x="3" y="3" width="18" height="18" rx="3" />
+            </FlyingSymbol>
 
-            // Concentric circles (mid-left).
-            <svg
-                class="float-shape shape-gentle text-fuchsia-500/50 dark:text-fuchsia-300/70"
-                style="bottom: 32%; right: 30%; width: 120px; height: 120px;"
-                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"
-            >
+            <FlyingSymbol class_str="absolute fly-c sym-violet" base="bottom: 32%; right: 30%; width: 110px; height: 110px;" delay="-10s">
                 <circle cx="12" cy="12" r="3" />
                 <circle cx="12" cy="12" r="7" />
                 <circle cx="12" cy="12" r="11" />
-            </svg>
+            </FlyingSymbol>
 
-            // Hexagon (top center).
-            <svg
-                class="float-shape shape-a text-indigo-500/45 dark:text-indigo-300/70"
-                style="top: 6%; left: 42%; width: 64px; height: 64px; animation-delay: 1.8s;"
-                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"
-            >
+            <FlyingSymbol class_str="absolute fly-a sym-indigo" base="top: 6%; left: 42%; width: 68px; height: 68px;" delay="-15s">
                 <path d="M12 2 22 7v10l-10 5L2 17V7z" />
-            </svg>
+            </FlyingSymbol>
 
-            // Star (lower right area).
+            // Filled star (slight variation on viewBox stroke vs fill).
             <svg
-                class="float-shape shape-d text-yellow-500/65 dark:text-yellow-300/85"
-                style="bottom: 18%; left: 60%; width: 60px; height: 60px; animation-delay: 2.2s;"
+                class="absolute fly-b sym-lime"
+                style="bottom: 18%; left: 60%; width: 64px; height: 64px; animation-delay: -20s;"
                 viewBox="0 0 24 24" fill="currentColor"
             >
                 <path d="M12 2 14.6 9.3 22 10l-5.8 4.9L18 22l-6-4-6 4 1.8-7.1L2 10l7.4-.7z" />
             </svg>
 
-            // Diamond/lock combo — riffs on the encrypted nature of the app.
-            <svg
-                class="float-shape shape-b text-cyan-500/55 dark:text-cyan-300/75"
-                style="top: 48%; left: 6%; width: 72px; height: 72px; animation-delay: 3.1s;"
-                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"
-            >
+            <FlyingSymbol class_str="absolute fly-c sym-cyan" base="top: 48%; left: 6%; width: 80px; height: 80px;" delay="-12s">
                 <rect x="6" y="12" width="12" height="9" rx="2" />
                 <path d="M9 12V8a3 3 0 0 1 6 0v4" />
-            </svg>
+            </FlyingSymbol>
+
+            // Two more for density — a small spiral and a diamond.
+            <FlyingSymbol class_str="absolute fly-a sym-rose" base="top: 72%; left: 38%; width: 58px; height: 58px;" delay="-23s">
+                <path d="M12 12c-4 0-4-6 0-6s4 6 0 6-4-9 0-9 8 9 0 9-9-12 0-12" />
+            </FlyingSymbol>
+
+            <FlyingSymbol class_str="absolute fly-b sym-warm" base="top: 34%; right: 8%; width: 60px; height: 60px;" delay="-5s">
+                <path d="M12 2 22 12 12 22 2 12z" />
+            </FlyingSymbol>
         </div>
+    }
+}
+
+#[component]
+fn FlyingSymbol(
+    #[prop(into)] class_str: String,
+    #[prop(into)] base: String,
+    #[prop(into)] delay: String,
+    children: Children,
+) -> impl IntoView {
+    let style = format!("{base} animation-delay: {delay};");
+    view! {
+        <svg
+            class=class_str
+            style=style
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.25"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            {children()}
+        </svg>
     }
 }

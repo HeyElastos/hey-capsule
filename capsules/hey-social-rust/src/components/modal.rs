@@ -40,7 +40,7 @@ pub fn Modal(open: RwSignal<bool>, children: ChildrenFn) -> impl IntoView {
     view! {
         <Show when=move || open.get() fallback=|| view! { <></> }>
             <div
-                class="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm p-4 pt-16 sm:pt-24 animate-fade-in"
+                class="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm p-4 pt-24 sm:pt-32 animate-fade-in"
                 on:click=move |_: MouseEvent| open.set(false)
             >
                 <div
