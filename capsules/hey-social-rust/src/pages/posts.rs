@@ -25,6 +25,128 @@ struct StagedFile {
     preview_url: String, // blob: URL, revoked on remove
 }
 
+// iPhone-style stack: top 3 cards visible, slightly rotated/offset so
+// they look like a deck of photos. Bottom: horizontal thumbnail row to
+// manage individual items (X to remove). "+N more" badge on the stack
+// when there are >3 files.
+#[component]
+fn PreviewStack(
+    staged: RwSignal<Vec<StagedFile>>,
+    remove: impl Fn(String) + 'static + Clone + Send + Sync,
+) -> impl IntoView {
+    view! {
+        <div class="flex flex-col items-center gap-4">
+            // Stacked deck — purely visual, no interactions (manage via thumbnails below).
+            <div class="relative w-44 h-44 sm:w-52 sm:h-52">
+                {move || {
+                    let files = staged.get();
+                    let visible: Vec<_> = files.iter().rev().take(3).cloned().collect();
+                    let total = files.len();
+                    // 3 fixed transforms — top card straight on top.
+                    let transforms = [
+                        "rotate(-6deg) translate(-10px, 4px)",
+                        "rotate(4deg) translate(8px, 2px)",
+                        "rotate(0deg)",
+                    ];
+                    visible
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, f)| {
+                            // We render bottom-to-top; index 0 = bottom, top = last.
+                            let depth = visible_depth(i, total.min(3));
+                            let style = format!(
+                                "transform: {}; z-index: {};",
+                                transforms[depth],
+                                depth + 1
+                            );
+                            let is_video = f.mime.starts_with("video/");
+                            view! {
+                                <div
+                                    class="absolute inset-0 frosted-card overflow-hidden p-0 shadow-2xl shadow-slate-950/40 animate-fade-up"
+                                    style=style
+                                >
+                                    {if is_video {
+                                        view! {
+                                            <video
+                                                class="block w-full h-full object-cover bg-black"
+                                                src=f.preview_url.clone()
+                                                muted=true
+                                            />
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <img
+                                                class="block w-full h-full object-cover"
+                                                src=f.preview_url.clone()
+                                                alt=f.name.clone()
+                                            />
+                                        }.into_any()
+                                    }}
+                                </div>
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                }}
+
+                {move || {
+                    let n = staged.get().len();
+                    if n > 3 {
+                        view! {
+                            <span class="absolute -top-2 -right-2 z-20 inline-flex items-center justify-center rounded-full bg-accent text-accent-text text-xs font-bold px-2.5 py-1 shadow-lg">
+                                {format!("+{}", n - 3)}
+                            </span>
+                        }.into_any()
+                    } else { view! { <></> }.into_any() }
+                }}
+            </div>
+
+            // Thumbnail row — small swipeable strip so users can drop
+            // individual photos without losing the stack overview.
+            <div class="w-full flex gap-2 overflow-x-auto pb-1 px-1 scroll-snap-x">
+                <For
+                    each=move || staged.get()
+                    key=|f| f.id.clone()
+                    children=move |f: StagedFile| {
+                        let id_for_remove = f.id.clone();
+                        let remove = remove.clone();
+                        let click_remove = move |_| remove(id_for_remove.clone());
+                        let is_video = f.mime.starts_with("video/");
+                        view! {
+                            <div class="relative shrink-0 w-16 h-16 rounded-xl overflow-hidden border border-surface bg-black/20">
+                                {if is_video {
+                                    view! { <video class="block w-full h-full object-cover" src=f.preview_url.clone() muted=true /> }.into_any()
+                                } else {
+                                    view! { <img class="block w-full h-full object-cover" src=f.preview_url.clone() alt=f.name.clone() /> }.into_any()
+                                }}
+                                <button
+                                    type="button"
+                                    on:click=click_remove
+                                    class="absolute top-0.5 right-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-black/65 text-white hover:bg-black/85 transition-colors"
+                                    aria-label="Remove"
+                                    title="Remove"
+                                >
+                                    <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M18 6 6 18M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                        }
+                    }
+                />
+            </div>
+        </div>
+    }
+}
+
+// Map iteration index (top-most first) to the transform-table index
+// so the top card always reads "straight" (rotation 0) and the lower
+// cards fan out behind it.
+fn visible_depth(i: usize, count: usize) -> usize {
+    // i=0 is the topmost (most recently iterated). With count=3,
+    // we want i=0 → transform 2 (straight), i=1 → transform 1, i=2 → 0.
+    count - 1 - i
+}
+
 #[component]
 pub fn Posts() -> impl IntoView {
     let caption = RwSignal::new(String::new());
@@ -178,61 +300,15 @@ pub fn Posts() -> impl IntoView {
                         </div>
                     </div>
 
-                    // Preview row — frosted photo cards, scrollable on mobile,
-                    // grid on wider screens.
+                    // Preview — iPhone-style stacked deck for the first 3
+                    // photos (rotated slightly, fanned out), with a full
+                    // thumbnail row below to manage individual items.
                     {move || {
                         let files = staged.get();
                         if files.is_empty() {
                             view! { <></> }.into_any()
                         } else {
-                            view! {
-                                <div class="flex gap-3 overflow-x-auto scroll-snap-x py-1">
-                                    <For
-                                        each=move || staged.get()
-                                        key=|f| f.id.clone()
-                                        children=move |f: StagedFile| {
-                                            let id_for_remove = f.id.clone();
-                                            let click_remove = move |_| remove_staged(id_for_remove.clone());
-                                            let is_video = f.mime.starts_with("video/");
-                                            view! {
-                                                <div class="relative frosted-card overflow-hidden p-0 flex-none w-40 h-40 sm:w-48 sm:h-48 shrink-0 animate-fade-up">
-                                                    {if is_video {
-                                                        view! {
-                                                            <video
-                                                                class="block w-full h-full object-cover bg-black"
-                                                                src=f.preview_url.clone()
-                                                                muted=true
-                                                            />
-                                                        }.into_any()
-                                                    } else {
-                                                        view! {
-                                                            <img
-                                                                class="block w-full h-full object-cover"
-                                                                src=f.preview_url.clone()
-                                                                alt=f.name.clone()
-                                                            />
-                                                        }.into_any()
-                                                    }}
-                                                    <button
-                                                        type="button"
-                                                        on:click=click_remove
-                                                        class="absolute top-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-white hover:bg-black/70 transition-colors"
-                                                        aria-label="Remove"
-                                                        title="Remove"
-                                                    >
-                                                        <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                                            <path d="M18 6 6 18M6 6l12 12" />
-                                                        </svg>
-                                                    </button>
-                                                    <div class="absolute inset-x-0 bottom-0 px-2 py-1 bg-gradient-to-t from-black/60 to-transparent text-[10px] text-white truncate">
-                                                        {f.name.clone()}
-                                                    </div>
-                                                </div>
-                                            }
-                                        }
-                                    />
-                                </div>
-                            }.into_any()
+                            view! { <PreviewStack staged=staged remove=remove_staged.clone() /> }.into_any()
                         }
                     }}
 
