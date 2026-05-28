@@ -1,29 +1,30 @@
 {
   "schema": "elastos.capsule/v1",
   "name": "hey-messenger",
-  "version": "0.0.1",
-  "description": "P2P messenger with workspaces, calls, and unlimited file share (iroh-blobs + iroh-docs + WebRTC over Carrier)",
+  "version": "0.1.0",
+  "description": "Hey Chat — P2P messenger with hybrid post-quantum E2E for DMs, iroh-blobs file share, and Carrier transport. Standalone, sovereign, no third-party servers.",
   "author": "HeyElastos",
   "role": "app",
-  "type": "microvm",
-  "entrypoint": "rootfs.ext4",
-  "requires": [
-    { "name": "peer", "kind": "provider" },
-    { "name": "blobs", "kind": "provider" },
-    { "name": "docs", "kind": "provider" },
-    { "name": "webrtc-signal", "kind": "provider" }
-  ],
-  "resources": {
-    "memory_mb": 512,
-    "gpu": false
-  },
+  "type": "data",
+  "entrypoint": "index.html",
   "permissions": {
     "storage": [
       "localhost://Users/*/HeyMessenger/*",
       "localhost://Users/self/.AppData/LocalHost/HeyMessenger/*",
       "localhost://Users/*/.AppData/Identity/*",
-      "localhost://Users/self/.AppData/Identity/*"
+      "localhost://Users/self/.AppData/Identity/*",
+      "localhost://Users/*/.AppData/ElastOS/Identity/*",
+      "localhost://Users/self/.AppData/ElastOS/Identity/*"
     ],
-    "messaging": []
+    "messaging": [
+      "elastos://peer/*",
+      "elastos://blobs/*",
+      "elastos://docs/*",
+      "elastos://did/*"
+    ]
+  },
+  "resources": {
+    "memory_mb": 256,
+    "gpu": false
   }
 }
