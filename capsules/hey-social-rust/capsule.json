@@ -6,7 +6,7 @@
   "author": "HeyElastos",
   "role": "app",
   "type": "data",
-  "entrypoint": "index.html",
+  "entrypoint": "dist/index.html",
   "permissions": {
     "storage": [
       "localhost://Users/*/Hey/*",
