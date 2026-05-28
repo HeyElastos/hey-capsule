@@ -33,7 +33,9 @@
 
 /* Default ~18s warp cycle — slow enough to read each symbol before it
    sails past, fast enough that new ones arrive constantly. Easing is
-   ease-in so symbols accelerate as they pass the viewer (the warp feel). */
+   ease-in so symbols accelerate as they pass the viewer (the warp feel).
+   USED FOR THE ONE-SHOT WARP TRANSITION ONLY — see .warp-transition
+   below; the welcome scene itself uses the gentler .drift-* keyframes. */
 .warp-n  { animation: warp-n  18s cubic-bezier(0.5, 0, 0.9, 0.6) infinite both; }
 .warp-s  { animation: warp-s  20s cubic-bezier(0.5, 0, 0.9, 0.6) infinite both; }
 .warp-e  { animation: warp-e  22s cubic-bezier(0.5, 0, 0.9, 0.6) infinite both; }
@@ -42,6 +44,46 @@
 .warp-nw { animation: warp-nw 23s cubic-bezier(0.5, 0, 0.9, 0.6) infinite both; }
 .warp-se { animation: warp-se 21s cubic-bezier(0.5, 0, 0.9, 0.6) infinite both; }
 .warp-sw { animation: warp-sw 24s cubic-bezier(0.5, 0, 0.9, 0.6) infinite both; }
+
+/* Gentle in-place drift for the welcome scene symbols. Each one wanders
+   a small box and rotates a bit; ease-in-out so motion is smooth at the
+   turnarounds. Pair with the .sym-* color classes for the glow. */
+@keyframes drift-a {
+  0%, 100% { transform: translate(0, 0)       rotate(0deg); }
+  25%      { transform: translate(20px, -25px) rotate(8deg); }
+  50%      { transform: translate(-15px, 12px) rotate(-6deg); }
+  75%      { transform: translate(18px, 8px)   rotate(10deg); }
+}
+@keyframes drift-b {
+  0%, 100% { transform: translate(0, 0)        rotate(0deg); }
+  33%      { transform: translate(-22px, 18px) rotate(-10deg); }
+  66%      { transform: translate(15px, -20px) rotate(6deg); }
+}
+@keyframes drift-c {
+  0%, 100% { transform: translate(0, 0)        rotate(0deg); }
+  50%      { transform: translate(12px, -28px) rotate(15deg); }
+}
+@keyframes drift-d {
+  0%, 100% { transform: translate(0, 0)        rotate(0deg)   scale(1); }
+  25%      { transform: translate(-12px, -8px) rotate(-4deg)  scale(1.05); }
+  75%      { transform: translate(8px, 12px)   rotate(6deg)   scale(0.95); }
+}
+.drift-a { animation: drift-a 14s ease-in-out infinite; }
+.drift-b { animation: drift-b 18s ease-in-out infinite; }
+.drift-c { animation: drift-c 22s ease-in-out infinite; }
+.drift-d { animation: drift-d 16s ease-in-out infinite; }
+
+/* One-shot warp transition: the whole onboarding section scales up
+   massively + blurs + fades, like the camera is being launched
+   through the scene into the feed. Apply via .warp-transition on
+   the section root when the user taps "Go to feed", wait ~650ms,
+   then navigate. */
+@keyframes warp-into-feed {
+  0%   { transform: scale(1)   translateZ(0); filter: blur(0);   opacity: 1; }
+  60%  { transform: scale(2.6) translateZ(0); filter: blur(8px); opacity: 0.6; }
+  100% { transform: scale(8)   translateZ(0); filter: blur(24px); opacity: 0; }
+}
+.warp-transition { animation: warp-into-feed 0.65s cubic-bezier(0.5, 0, 0.85, 1) forwards; }
 
 .glow-drift { animation: glow-drift 22s ease-in-out infinite; }
 
