@@ -16,9 +16,10 @@ pub fn Onboarding() -> impl IntoView {
         leaving.set(true);
         let navigate = navigate.clone();
         spawn_local(async move {
-            // Match the 1.1 s warp-out keyframe; navigate at ~950 ms so
-            // the route swap happens at peak fade-out, hiding the seam.
-            wait_ms(950).await;
+            // Navigate at warp-out completion (1 s = full keyframe) so
+            // the feed's warp-in starts from the same scale + blur the
+            // welcome ended at — one continuous tunnel, no seam.
+            wait_ms(1000).await;
             navigate("/", NavigateOptions::default());
         });
     };

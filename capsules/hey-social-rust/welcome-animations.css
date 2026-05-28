@@ -73,27 +73,31 @@
 .drift-c { animation: drift-c 22s ease-in-out infinite; }
 .drift-d { animation: drift-d 16s ease-in-out infinite; }
 
-/* Soft warp-out — the current page scales up + fades + blurs to make
-   it feel like the user is being pulled through the screen into the
-   next view. Material-standard easing so the motion is smooth without
-   the snappy ease-in feel of the previous version. Apply via
-   .warp-transition on the page root when the user takes an action
-   that navigates forward, wait ~950ms, then navigate. */
+/* Warp out + in — the current page scales up + blurs + fades to invisible,
+   the incoming page then STARTS from that same scaled+blurred state and
+   shrinks back to normal. Same scale/blur at the swap moment hides the
+   route-swap seam: it reads as one continuous tunnel rather than two
+   bookend animations sandwiching a cut.
+
+   To make this work, navigate when warp-out hits 100% (use a delay equal
+   to the keyframe duration), so welcome is fully transparent when the
+   feed mounts and starts warping in. */
 @keyframes warp-out {
   0%   { transform: scale(1)    translateZ(0); filter: blur(0);    opacity: 1; }
-  100% { transform: scale(3.5)  translateZ(0); filter: blur(20px); opacity: 0; }
+  100% { transform: scale(3.5)  translateZ(0); filter: blur(22px); opacity: 0; }
 }
-.warp-transition { animation: warp-out 1.1s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+.warp-transition { animation: warp-out 1s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
 
-/* Warp-in — opposite direction. The incoming page starts tiny + blurred,
-   grows + sharpens + fades in. Apply on a page root for the entrance
-   side of the transition (e.g. /welcome arriving from /signin). */
+/* Warp-in starts from the same scale + blur the warp-out ENDED at. The
+   incoming page is invisible at scale 3.5 blur 22, snaps to opacity 1
+   in the first 8% of the keyframe (≈70 ms), then shrinks and sharpens
+   over the remaining 92%. */
 @keyframes warp-in {
-  0%   { transform: scale(0.3) translateZ(0); filter: blur(18px); opacity: 0; }
-  60%  { opacity: 1; }
+  0%   { transform: scale(3.5) translateZ(0); filter: blur(22px); opacity: 0; }
+  8%   { opacity: 1; }
   100% { transform: scale(1)   translateZ(0); filter: blur(0);    opacity: 1; }
 }
-.warp-in { animation: warp-in 0.95s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.warp-in { animation: warp-in 0.9s cubic-bezier(0.16, 1, 0.3, 1) both; }
 
 .glow-drift { animation: glow-drift 22s ease-in-out infinite; }
 
@@ -284,4 +288,25 @@ html.light .frosted-card-strong {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* Centers any empty-state card in the available space below the topbar.
+   The min-height ensures the flex container actually has room; the
+   padding-top pushes the centerline down so the card lands in the
+   middle-third of the viewport instead of grazing the top. Same JIT
+   reason as .modal-anchor — Tailwind arbitrary classes (min-h-[60vh],
+   pt-[12vh]) are inert because the React-precompiled styles.css never
+   emitted them. */
+.empty-state-wrap {
+  min-height: 70vh;
+  padding-top: 10vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+@media (min-width: 640px) {
+  .empty-state-wrap {
+    min-height: 65vh;
+    padding-top: 8vh;
+  }
 }
