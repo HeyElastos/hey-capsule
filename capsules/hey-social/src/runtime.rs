@@ -44,6 +44,13 @@ const SESSION_REDEEMED_KEY: &str = "hey-session-redeemed";
 const HOME_LAUNCH_TOKEN_KEY: &str = "hey-home-launch-token";
 const ROUTE_MODE_KEY: &str = "hey-storage-route-mode";
 const TOKEN_STORE_KEY: &str = "hey-capability-tokens";
+/// Bearer token cache. The fork's `/runtime-token` endpoint returns
+/// a session bearer in the response body but does NOT set a cookie —
+/// so if we hit that fallback path we have to stash the bearer here
+/// and add it as `Authorization: Bearer …` on every subsequent fetch.
+/// The newer `/session/start` cookie path leaves this empty (and that's
+/// fine — the cookie rides via `credentials: 'include'` automatically).
+const RUNTIME_TOKEN_KEY: &str = "hey-runtime-token";
 
 #[derive(Debug, Clone)]
 pub struct RuntimeError {
@@ -201,17 +208,40 @@ pub async fn redeem_launch_token() -> bool {
                 ));
                 return false;
             }
-            // Legacy runtime returns a bearer token in the body — we
-            // ignore it. The HttpOnly cookie should also have been set
-            // alongside it on any sane impl; if the runtime is so old
-            // that only the bearer works, the user will see auth
-            // failures on subsequent requests and we can revive the
-            // bearer-handling path then.
+            // The legacy endpoint returns { "token": "<bearer>" } in JSON
+            // and does NOT set an HttpOnly cookie. Stash the bearer so
+            // upstream_fetch (and any other caller that goes through
+            // fetch_raw) can attach it as Authorization: Bearer on
+            // subsequent requests. Without this, every following call —
+            // /api/session, /api/capability/request, /api/provider/* —
+            // returns 401 because credentials: 'include' alone has
+            // nothing to send.
+            let parsed: Option<Value> = match JsFuture::from(resp.json().unwrap()).await {
+                Ok(v) => serde_wasm_bindgen::from_value(v).ok(),
+                Err(_) => None,
+            };
+            if let Some(tok) = parsed
+                .as_ref()
+                .and_then(|j| j.get("token"))
+                .and_then(|t| t.as_str())
+            {
+                let _ = SessionStorage::set(RUNTIME_TOKEN_KEY, tok);
+            } else {
+                log_warn("[hey-social] runtime-token response had no `token` field");
+                return false;
+            }
             let _ = SessionStorage::set(SESSION_REDEEMED_KEY, "true");
             true
         }
         Err(_) => false,
     }
+}
+
+/// Read the cached session bearer (set by the legacy /runtime-token
+/// redemption path). Returns None on the canonical /session/start
+/// cookie path or when no redemption has happened yet.
+fn current_runtime_token() -> Option<String> {
+    SessionStorage::get::<String>(RUNTIME_TOKEN_KEY).ok()
 }
 
 /// Back-compat shim — the old name is still called from lib.rs and a
@@ -241,6 +271,17 @@ async fn fetch_raw(
             if let Some(s) = v.as_str() {
                 hdrs.set(k, s)?;
             }
+        }
+    }
+    // If we redeemed via the legacy /runtime-token path the runtime
+    // handed us a session bearer in JSON instead of setting a cookie.
+    // Attach it as Authorization: Bearer on every fetch (unless the
+    // caller already set Authorization themselves). On the canonical
+    // /session/start cookie path current_runtime_token() returns None
+    // and this is a no-op — the cookie rides via credentials:'include'.
+    if hdrs.get("Authorization").ok().flatten().is_none() {
+        if let Some(tok) = current_runtime_token() {
+            hdrs.set("Authorization", &format!("Bearer {tok}"))?;
         }
     }
     let resp_value = JsFuture::from(window().fetch_with_request(&req)).await?;
