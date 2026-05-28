@@ -1,0 +1,31 @@
+{
+  "schema": "elastos.capsule/v1",
+  "name": "hey-social-rust",
+  "version": "0.0.1",
+  "description": "Hey Social — Rust + Leptos + WASM port of the photo/video/chat capsule. Federated peer-to-peer via Carrier; media on IPFS; sovereign identity via passkey + did:key. Video playback delegated to Elacity Player via the provider bus.",
+  "author": "HeyElastos",
+  "role": "app",
+  "type": "data",
+  "entrypoint": "index.html",
+  "permissions": {
+    "storage": [
+      "localhost://Users/*/Hey/*",
+      "localhost://Users/self/.AppData/LocalHost/Hey/*",
+      "localhost://Users/*/.AppData/Identity/*",
+      "localhost://Users/self/.AppData/Identity/*",
+      "localhost://Users/*/.AppData/SystemServices/Shell/*",
+      "localhost://Users/self/.AppData/SystemServices/Shell/*"
+    ],
+    "messaging": [
+      "elastos://peer/hey-v0/*",
+      "elastos://ipfs/*",
+      "elastos://did/*",
+      "elastos://hey-transcoder/*",
+      "elastos://elacity/*"
+    ]
+  },
+  "resources": {
+    "memory_mb": 256,
+    "gpu": false
+  }
+}
