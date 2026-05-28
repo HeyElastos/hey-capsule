@@ -5,6 +5,7 @@ import App from "./App";
 import { acquireBootCapabilities } from "./lib/runtime";
 import { initSession, getDidKey } from "./lib/session";
 import { publishOwnBundle } from "./lib/profile";
+import { readSharedIdentity } from "./lib/shell";
 import "./index.css";
 
 // Derive the router basename from the iframe's mount path. Under YunoHost
@@ -33,6 +34,42 @@ const boot = async () => {
     await initSession();
   } catch (err) {
     console.warn("[hey] initSession failed; rendering as signed-out", err);
+  }
+
+  // Auto-adopt the runtime's user identity. If the runtime (or another
+  // capsule on this node) has already created a DID for this user, plant
+  // a signed-in profile in localStorage so the app skips the Hey signup
+  // page entirely. Read-only adoption: the user sees the feed under
+  // their existing identity; if they attempt a signed action without a
+  // local signing key in IDB, the existing SignInModal asks for the
+  // recovery key (or passkey) one time. Idempotent — skips if a Hey
+  // profile is already cached.
+  try {
+    const hasLocalProfile = !!localStorage.getItem("profile");
+    if (!hasLocalProfile) {
+      const shared = await readSharedIdentity().catch(() => null);
+      if (shared?.didKey) {
+        const adopted = {
+          user: {
+            id: shared.didKey,
+            name: shared.name || "Hey user",
+            bio: shared.bio || "",
+            avatar: shared.avatar || "",
+            didKey: shared.didKey,
+            role: "general",
+            counts: { followers: 0, following: 0 },
+          },
+          accessToken: "capsule-session",
+          refreshToken: "capsule-session",
+          accessTokenUpdatedAt: new Date().toISOString(),
+          adoptedFromShared: true,
+        };
+        localStorage.setItem("profile", JSON.stringify(adopted));
+        console.info("[hey] adopted runtime identity", shared.didKey);
+      }
+    }
+  } catch (err) {
+    console.warn("[hey] shared-identity adoption probe failed", err);
   }
 
   // Publish our hybrid-PQ pubkey bundle so peers can E2E-encrypt DMs to
