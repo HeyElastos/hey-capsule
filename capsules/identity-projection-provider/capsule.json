@@ -8,7 +8,21 @@
   "type": "microvm",
   "entrypoint": "rootfs.ext4",
   "provides": "elastos://identity/*",
-  "capabilities": ["localhost://ElastOS/SystemServices/Identity/*"],
+  "authority": {
+    "reason": "Holds the Ed25519 signing key for one or more app-scoped DIDs so app capsules don't need to persist raw key material in localStorage / IndexedDB. The runtime principal can later be projected into the same key namespace; capsules ask whoami/sign/verify, never see the secret.",
+    "capabilities": [
+      {
+        "resource": "elastos://identity/*",
+        "actions": ["execute"],
+        "operations": ["whoami", "sign", "verify"]
+      }
+    ],
+    "audit_events": [
+      "identity.whoami",
+      "identity.sign",
+      "identity.verify"
+    ]
+  },
   "resources": {
     "memory_mb": 64,
     "gpu": false

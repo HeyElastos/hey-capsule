@@ -8,7 +8,22 @@
   "type": "microvm",
   "entrypoint": "rootfs.ext4",
   "provides": "elastos://content/*",
-  "capabilities": ["localhost://ElastOS/SystemServices/Content/*"],
+  "authority": {
+    "reason": "App capsules MUST NOT call ipfs-provider directly (system-only per CONTENT_AVAILABILITY); they go through content/*, which gates the pin lifecycle, will eventually enforce dDRM, and returns a signed availability receipt. This provider is the dispatch target for elastos://content/*.",
+    "capabilities": [
+      {
+        "resource": "elastos://content/*",
+        "actions": ["read", "write", "execute", "delete"],
+        "operations": ["publish", "fetch", "ensure", "unpublish"]
+      }
+    ],
+    "audit_events": [
+      "content.publish",
+      "content.fetch",
+      "content.ensure",
+      "content.unpublish"
+    ]
+  },
   "resources": {
     "memory_mb": 128,
     "gpu": false

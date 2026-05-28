@@ -125,21 +125,34 @@ fn read_url_token() -> Option<String> {
 
 /// Redeem the Home launch token for an app-scoped session.
 ///
-/// Per the upstream contract the runtime sets an HttpOnly cookie on
-/// the response — the capsule never sees a credential. Subsequent
-/// fetches with `credentials: 'include'` carry the cookie
-/// automatically; we just need to remember that we've done the
-/// redemption so we don't re-POST on every fetch.
+/// Successful redemption: the runtime sets an app-scoped HttpOnly
+/// cookie (`hey-session` or similar) on the response. Subsequent
+/// fetches with `credentials: 'include'` carry it automatically; we
+/// just remember "redeemed" in sessionStorage so we don't re-POST on
+/// every fetch.
 ///
-/// The canonical endpoint (per Chat Room reference + state.md) is
-/// `/api/apps/<id>/session/start`. The legacy endpoint `/runtime-token`
-/// still exists on older runtime builds; we try the canonical name
-/// first and fall back on 404/405. Either way, success means the
-/// cookie is set.
+/// Endpoint reality (read from upstream @ 6d4c385 + the YNH fork):
+///
+///   * `POST /api/apps/<id>/session/start` is the canonical path.
+///     Upstream v0.3 only routes it for the {documents, library,
+///     system, wallet, browser} apps + chat-room — there is NO
+///     generic per-app handler. The Hey YNH fork's patch 0001 adds
+///     hey-social and hey-messenger to the allowlist; on that fork
+///     `/session/start` works for us.
+///
+///   * `POST /api/apps/<id>/runtime-token` does NOT exist in
+///     upstream and is not a generic upstream contract. We keep it as
+///     a fallback only for older / patched YNH builds that happened
+///     to expose it under that name.
+///
+/// We try `/session/start` first because the YNH-fork patch wires it
+/// up; on stock upstream and on older YNH builds it 404s and we drop
+/// to the legacy `/runtime-token` attempt. Either succeeding sets the
+/// cookie; failure of both means no session for this load.
 ///
 /// Returns true if a session is in place (already-redeemed OR fresh
 /// redemption succeeded). Returns false if no launch token is
-/// available or the runtime rejected it.
+/// available or both endpoints rejected it.
 ///
 /// Renamed from `bearer_ready` (the old name carried the bearer-token
 /// model which we no longer use).
@@ -1063,30 +1076,18 @@ fn short_did_name(did: &str) -> String {
 
 // ── Session introspection ────────────────────────────────────────────
 //
-// The upstream contract eventually wants apps to call provider
-// surfaces — `elastos://session/current` for "who am I running for",
-// `elastos://principal/current` for the runtime user, and
-// `elastos://capabilities/current` for app scope. We prefer the
-// provider path when available and fall back to GET /api/session for
-// runtime builds that don't expose the session provider yet.
+// Upstream's runtime exposes the per-capsule session through
+// `GET /api/session` (handlers/capability.rs:541 — returns
+// `{session_id, session_type, vm_id, capabilities_count, created_at,
+// last_active}`). There ARE three reserved scheme names —
+// `elastos://session/*`, `elastos://principal/*`,
+// `elastos://capabilities/*` — but NO built-in capsule registers them
+// in upstream @ 6d4c385. Calling `provider_call("session", ...)` today
+// is guaranteed to fail (the scheme has no provider), so we don't
+// bother — saves a round-trip per session lookup. If a session
+// provider lands upstream later, swap to it here.
 
-/// Try the `elastos://session/*` provider first; on any error fall
-/// back to the HTTP `/api/session` endpoint. Returns the raw JSON; the
-/// caller is responsible for parsing the shape (which differs between
-/// transports).
 pub async fn session_current() -> Option<Value> {
-    if let Ok(v) = provider_call("session", "current", json!({})).await {
-        if !v.is_null() {
-            return Some(v);
-        }
-    }
-    session_current_via_http().await
-}
-
-/// Provider-bypassing fallback — for runtime versions that don't yet
-/// expose `elastos://session/current`. Public so callers that want
-/// the legacy shape specifically can ask for it.
-pub async fn session_current_via_http() -> Option<Value> {
     let _ = redeem_launch_token().await;
     let headers = json!({});
     let url = api_url("/api/session");
