@@ -20,6 +20,11 @@ import {
   expandKeypair,
 } from "../lib/identity";
 import { storage, peer, ipfs } from "../lib/runtime";
+import {
+  encodePostMetadata,
+  decodePostMetadata,
+  materializeFromIpld,
+} from "../lib/ipld";
 import { setSession, clearSession, getKeypair } from "../lib/session";
 import { deleteSigningKey } from "../lib/keystore";
 import { createSignedEvent } from "../lib/events";
@@ -455,6 +460,14 @@ export const createPost = async ({ caption, images }, onProgress) => {
 
   const id = crypto.randomUUID();
   const ts = now();
+
+  // Build the post record. Two halves:
+  //   - Immutable bits (caption, media, author, ts) — encoded to a
+  //     dag-cbor IPLD blob and pinned to IPFS; the blob's CID is the
+  //     canonical post identity (post_cid).
+  //   - Mutable overlays (reactions, comments, reposts) — kept only
+  //     in local storage; receivers materialize empty arrays for
+  //     remote posts and accumulate via overlay events.
   const post = {
     id,
     userId: me.id,
@@ -470,12 +483,45 @@ export const createPost = async ({ caption, images }, onProgress) => {
     ts,
   };
 
-  await signEventAndPublish(`hey-v0/user/${me.didKey}/posts`, "post.create", post);
+  // 1. Encode the immutable body to dag-cbor and pin to IPFS.
+  const ipldBytes = encodePostMetadata(post);
+  const ipldResp = await ipfs.addBytes(ipldBytes, `post-${id}.cbor`, true);
+  const post_cid = ipldResp?.data?.cid || ipldResp?.cid;
+  if (!post_cid) throw new Error("ipfs.addBytes for post metadata returned no CID");
+  post.post_cid = post_cid;
+
+  // 2. Carrier event is a thin envelope referencing the CID; the
+  //    full payload no longer rides every gossip hop.
+  await signEventAndPublish(`hey-v0/user/${me.didKey}/posts`, "post.create.v2", {
+    post_cid,
+  });
+
+  // 3. Local cache keeps the full record (for own-feed rendering +
+  //    overlay state).
   await writePost(id, post);
   const idx = await readFeedIndex();
-  idx.unshift({ id, ts, author: me.didKey });
+  idx.unshift({ id, ts, author: me.didKey, post_cid });
   await writeFeedIndex(idx);
   return { post };
+};
+
+// Materialize a remote post from a post.create.v2 Carrier event. The
+// envelope only carries a CID; fetch the dag-cbor body from IPFS,
+// decode, and produce a Hey-internal post with empty overlays. Caller
+// then writePost + writeFeedIndex to land it in the local feed.
+//
+// Returns null if the CID can't be fetched or decoded; caller decides
+// whether to retry or drop.
+export const materializePostFromCid = async (post_cid) => {
+  if (!post_cid || typeof post_cid !== "string") return null;
+  try {
+    const bytes = await ipfs.getBytes(post_cid);
+    const body = decodePostMetadata(bytes);
+    return materializeFromIpld(body, { post_cid });
+  } catch (err) {
+    console.warn(`[hey] failed to materialize post ${post_cid}:`, err);
+    return null;
+  }
 };
 
 export const getPosts = async () => {
