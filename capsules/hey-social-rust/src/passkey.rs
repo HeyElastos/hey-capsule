@@ -305,10 +305,27 @@ pub async fn sign_in_via_runtime(nickname: Option<String>) -> Result<Session, St
         .or(upstream_name)
         .unwrap_or_else(|| format!("{}…", did_key.chars().take(14).collect::<String>()));
 
+    // Reuse existing ML-KEM keypair if present (so re-signin on the same
+    // device doesn't change our publicly-published KEM pub). Otherwise
+    // generate a fresh one — 2.4 KB secret, ~1.6 KB public, b64-encoded.
+    let (ml_kem_secret_b64, ml_kem_public_b64) = match session::current() {
+        Some(prev) if !prev.ml_kem_secret_b64.is_empty() => {
+            (prev.ml_kem_secret_b64, prev.ml_kem_public_b64)
+        }
+        _ => {
+            use base64::engine::general_purpose::STANDARD as B64;
+            use base64::Engine as _;
+            let (sk, pk) = crate::crypto::generate_ml_kem_keypair();
+            (B64.encode(&sk), B64.encode(&pk))
+        }
+    };
+
     let new_session = Session {
         auth_key_hex: auth_key,
         did_key: did_key.clone(),
         name: name.clone(),
+        ml_kem_secret_b64,
+        ml_kem_public_b64,
     };
     session::set(&new_session);
 

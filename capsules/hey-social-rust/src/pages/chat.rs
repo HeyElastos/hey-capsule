@@ -127,8 +127,12 @@ fn ContactList(contacts: RwSignal<Vec<DmContact>>, active_did: Signal<String>) -
         <div class="w-full flex flex-col">
             <header class="px-4 py-3 border-b border-surface flex items-baseline justify-between">
                 <h2 class="logo-handwritten text-3xl text-primary">"Chat"</h2>
-                <span class="text-[10px] uppercase tracking-wider text-muted" title="Messages are Ed25519-signed but not yet end-to-end encrypted. ML-KEM-768 + X25519 hybrid coming.">
-                    "Signed · E2E soon"
+                <span class="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-emerald-400" title="End-to-end encrypted with ML-KEM-768 + X25519 hybrid post-quantum + ChaCha20-Poly1305. First message in a thread is plaintext until both sides exchange pubkeys.">
+                    <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="11" width="18" height="11" rx="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </svg>
+                    "E2E · PQ-hybrid"
                 </span>
             </header>
             {move || {
@@ -281,11 +285,12 @@ fn Conversation(
                 </NavLink>
                 <p class="text-[10px] font-mono text-muted truncate">{short_did(&did)}</p>
             </div>
-            <span class="hidden sm:inline-flex items-center gap-1 rounded-full bg-white/10 border border-surface px-2 py-0.5 text-[10px] text-muted" title="Messages are Ed25519-signed but not yet end-to-end encrypted.">
+            <span class="hidden sm:inline-flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] text-emerald-300" title="End-to-end encrypted with ML-KEM-768 (FIPS 203 post-quantum) + X25519 + ChaCha20-Poly1305. First message in a thread is plaintext until both sides exchange pubkeys; subsequent messages are encrypted.">
                 <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 22s-8-4-8-12V5l8-3 8 3v5c0 8-8 12-8 12z" />
+                    <rect x="3" y="11" width="18" height="11" rx="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
-                "Signed · E2E soon"
+                "E2E · PQ-hybrid"
             </span>
         </header>
 
@@ -352,11 +357,21 @@ fn Bubble(m: DmMessage) -> impl IntoView {
     } else {
         "text-[10px] text-muted mt-0.5"
     };
+    let ts_text = ts_short(m.ts);
+    let enc_label = if m.encrypted { "·🔒" } else { "·!" };
+    let enc_title = if m.encrypted {
+        "Encrypted (ML-KEM-768 + X25519)"
+    } else {
+        "Plaintext bootstrap (no peer pubkeys yet)"
+    };
     view! {
         <div class=row_class>
             <div class=bubble_class>
                 <p class="text-sm whitespace-pre-wrap break-words">{m.text}</p>
-                <p class=ts_class>{ts_short(m.ts)}</p>
+                <p class=ts_class>
+                    <span>{ts_text}</span>
+                    <span class="ml-1 text-[9px] opacity-70" title=enc_title>{enc_label}</span>
+                </p>
             </div>
         </div>
     }

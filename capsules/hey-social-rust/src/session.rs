@@ -15,6 +15,14 @@ pub struct Session {
     pub auth_key_hex: String,
     pub did_key: String,
     pub name: String,
+    /// ML-KEM-768 secret key, base64-encoded. Generated once at first
+    /// sign-in; the matching public key gets published to peers via every
+    /// dm.message envelope so they can encrypt to us. ~2400 bytes b64.
+    #[serde(default)]
+    pub ml_kem_secret_b64: String,
+    /// ML-KEM-768 public key, base64. ~1580 b64 chars.
+    #[serde(default)]
+    pub ml_kem_public_b64: String,
 }
 
 pub fn current() -> Option<Session> {

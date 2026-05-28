@@ -8,6 +8,7 @@ use leptos_router::path;
 pub mod api;
 pub mod app_modals;
 pub mod components;
+pub mod crypto;
 pub mod events;
 pub mod identity;
 pub mod ipld;
