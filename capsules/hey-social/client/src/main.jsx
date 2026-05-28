@@ -2,10 +2,9 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
-import { acquireBootCapabilities, session as runtimeSession, passkeyStatus, bearerReady } from "./lib/runtime";
+import { acquireBootCapabilities } from "./lib/runtime";
 import { initSession, getDidKey } from "./lib/session";
 import { publishOwnBundle } from "./lib/profile";
-import { readSharedIdentity } from "./lib/shell";
 import "./index.css";
 
 // Derive the router basename from the iframe's mount path. Under YunoHost

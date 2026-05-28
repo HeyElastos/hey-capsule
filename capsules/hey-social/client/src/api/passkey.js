@@ -14,7 +14,7 @@ import {
   startAuthentication,
   browserSupportsWebAuthn,
 } from "@simplewebauthn/browser";
-import { storage } from "../lib/runtime";
+import { storage, apiUrl, bearerReady } from "../lib/runtime";
 import {
   generateAuthKey,
   hashAuthKey,
@@ -408,6 +408,202 @@ export const passkeySignin = async () => {
       avatar: user.avatar || "",
       role: user.role,
       didKey: user.didKey || "",
+      counts: {
+        followers: (user.followers || []).length,
+        following: (user.following || []).length,
+      },
+    },
+    accessToken: "capsule-session",
+    refreshToken: "capsule-session",
+    accessTokenUpdatedAt: new Date().toISOString(),
+  };
+};
+
+// ── Upstream passkey contract ──────────────────────────────────────
+//
+// In v0.3 the runtime owns the user's principal (created via passkey
+// signup in System). Hey calls upstream's authenticate flow as a
+// proof-of-passkey: we get back the user's DID and (with the PRF
+// extension) the same 32 bytes every other Elastos capsule's passkey
+// ceremony produces for the shared identity input — so Hey's signing
+// key is consistent across all the user's capsules.
+//
+// Flow:
+//   POST /api/auth/passkey/authenticate/begin    → WebAuthn options
+//   inject PRF extension                          (cross-capsule unified)
+//   navigator.credentials.get(options)            → assertion
+//   POST /api/auth/passkey/authenticate/complete  → upstream verifies
+//
+// Architecture doc: this is the stable contract the runtime tells
+// third-party capsules to use ("don't read .AppData/Identity/* — use
+// the passkey auth contract").
+
+const upstreamFetch = async (path, init = {}) => {
+  await bearerReady.catch(() => false);
+  // Reach into runtime.js's bearer cache via the exported helpers.
+  // We avoid importing the internal authHeaders to keep the surface
+  // narrow; for upstream's /api/auth/passkey/* the cookie + bearer
+  // path is what matters. session.current() already proved this works
+  // post-bearer-exchange.
+  return fetch(apiUrl(path), {
+    method: init.method || "GET",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(init.headers || {}) },
+    body: init.body,
+  });
+};
+
+// Sign in to the runtime via the existing passkey. Returns the same
+// shape passkeySignin returns ({ message, user, accessToken, ... }) so
+// Landing.jsx can navigate identically after either path.
+//
+// Idempotent on success; safe to retry on user-cancel (an OperationError
+// or NotAllowedError propagates so the caller can show a "Try again"
+// affordance without leaving partial state).
+export const signInViaRuntime = async (nickname = null) => {
+  // 1. Ask upstream for authenticate options. Some upstream versions
+  //    accept POST {}; others use GET. Try POST first (matches the
+  //    /register/begin pattern); fall back to GET on 405.
+  let beginResp = await upstreamFetch("/api/auth/passkey/authenticate/begin", {
+    method: "POST",
+    body: "{}",
+  });
+  if (beginResp.status === 405) {
+    beginResp = await upstreamFetch("/api/auth/passkey/authenticate/begin", { method: "GET" });
+  }
+  if (!beginResp.ok) {
+    // 400/404 most commonly means upstream has no credentials yet for
+    // this principal — i.e. the user never finished passkey signup in
+    // System. Surface a friendly message instead of the raw HTTP code.
+    if (beginResp.status === 400 || beginResp.status === 404) {
+      throw new Error(
+        "No passkey set up on this device yet. Go back to System (the home dock) and create a passkey first, then come back here.",
+      );
+    }
+    throw new Error(`passkey authenticate/begin: HTTP ${beginResp.status}`);
+  }
+  const beginJson = await beginResp.json();
+  // Upstream may wrap options under {publicKey: ...} (WebAuthn-classic
+  // shape) or hand them at the top level. SimpleWebAuthn wants the
+  // top-level form.
+  const options = beginJson?.publicKey || beginJson?.options || beginJson;
+
+  // Inject the cross-capsule unified-identity PRF extension. Every
+  // Elastos capsule asking for this same input gets the same 32 bytes.
+  options.extensions = options.extensions || {};
+  options.extensions.prf = options.extensions.prf || {
+    eval: { first: ELASTOS_IDENTITY_PRF_INPUT },
+  };
+
+  // 2. Run the WebAuthn ceremony.
+  const assertion = await startAuthentication({ optionsJSON: options });
+
+  // 3. POST the assertion back to upstream to verify + finalize.
+  const completeResp = await upstreamFetch("/api/auth/passkey/authenticate/complete", {
+    method: "POST",
+    body: JSON.stringify(assertion),
+  });
+  if (!completeResp.ok) {
+    const txt = await completeResp.text().catch(() => "");
+    throw new Error(`passkey authenticate/complete: HTTP ${completeResp.status} ${txt.slice(0, 200)}`);
+  }
+  // Response shape is upstream-version-dependent. We don't depend on
+  // any specific DID/name field here — the PRF output is the source
+  // of truth for Hey's signing identity. Upstream's response only has
+  // to be "200" for us to proceed.
+  let upstreamResult = null;
+  try { upstreamResult = await completeResp.json(); } catch (_) {}
+
+  // 4. Derive Hey's signing identity from the PRF output. This is the
+  //    same derivation passkeySignup uses, so DID + signing key are
+  //    identical to what a recovery-key signup with the same passkey
+  //    would have produced — fully consistent cross-capsule identity.
+  const identityPrf = prfIdentityFromResponse(assertion);
+  if (!identityPrf) {
+    throw new Error(
+      "Passkey didn't return PRF output — your authenticator lacks the prf extension. " +
+      "Use a PRF-capable passkey (Yubikey 5.7+, Touch ID macOS 14+, modern Windows Hello, Android 14+)."
+    );
+  }
+  const authKey = bytesToHex(identityPrf);
+  const { didKey } = expandKeypair(authKey);
+  const authKeyHash = await hashAuthKey(authKey);
+  await setSession(authKey);
+
+  // 5. Materialize / refresh the Hey-local profile.
+  const upstreamDisplayName =
+    upstreamResult?.displayName ||
+    upstreamResult?.name ||
+    upstreamResult?.user?.name ||
+    upstreamResult?.user?.displayName ||
+    null;
+  let user = await storage.readJson(PROFILE_FILE);
+  if (!user) {
+    user = {
+      id: crypto.randomUUID(),
+      name: (nickname || upstreamDisplayName || `${didKey.slice(0, 14)}…`).trim().slice(0, 30),
+      authKeyHash,
+      didKey,
+      role: "general",
+      avatar: "",
+      bio: "",
+      followers: [],
+      following: [],
+      pendingFollowers: [],
+      pendingFollowing: [],
+      createdAt: new Date().toISOString(),
+    };
+    await storage.writeJson(PROFILE_FILE, user);
+  } else if (nickname && nickname.trim() && user.name !== nickname.trim()) {
+    user.name = nickname.trim().slice(0, 30);
+    await storage.writeJson(PROFILE_FILE, user);
+  }
+
+  // 6. Publish to the shared-identity contract so the home shell and
+  //    other capsules see the user as already signed up. Dual-write to
+  //    both canonical and legacy paths via writeSharedIdentity.
+  try {
+    const { writeSharedIdentity } = await import("../lib/shell");
+    await writeSharedIdentity({
+      name: user.name,
+      didKey,
+      recoveryKeyHash: authKeyHash,
+      passkeys: [],
+      createdAt: user.createdAt,
+      createdBy: "hey-runtime-signin",
+    });
+  } catch (err) {
+    console.warn("[hey] writeSharedIdentity failed at runtime signin", err);
+  }
+
+  // 7. If a vault exists, unlock it from the same PRF output.
+  if (await heyVault.hasVault()) {
+    try {
+      const vaultPrf = await deriveVaultPrf(identityPrf);
+      await heyVault.unlockVaultWithPRF(vaultPrf);
+    } catch (err) {
+      console.warn("[hey] vault unlock failed at runtime signin", err);
+    }
+  } else {
+    // No vault yet (first-ever sign-in) — initialize one bound to this
+    // passkey PRF + the user's recovery-equivalent (authKey hex).
+    try {
+      const vaultPrf = await deriveVaultPrf(identityPrf);
+      await heyVault.initVault({ prfOutput: vaultPrf, recoveryHex: authKey });
+    } catch (err) {
+      console.warn("[hey] vault init failed at runtime signin", err);
+    }
+  }
+
+  return {
+    message: "Signed in via runtime passkey",
+    user: {
+      id: user.id,
+      name: user.name,
+      bio: user.bio || "",
+      avatar: user.avatar || "",
+      role: user.role,
+      didKey,
       counts: {
         followers: (user.followers || []).length,
         following: (user.following || []).length,

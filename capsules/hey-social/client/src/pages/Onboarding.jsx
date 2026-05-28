@@ -29,8 +29,20 @@ const Onboarding = () => {
   const [avatarFile, setAvatarFile] = useState(null);
   const [avatarPreview, setAvatarPreview] = useState(profile?.user?.avatar || "");
   const [bio, setBio] = useState(profile?.user?.bio || "");
+  const [nickname, setNickname] = useState(profile?.user?.name || "");
+  const [didCopied, setDidCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+
+  const didKey = profile?.user?.didKey || "";
+  const handleCopyDid = async () => {
+    if (!didKey) return;
+    try {
+      await navigator.clipboard.writeText(didKey);
+      setDidCopied(true);
+      setTimeout(() => setDidCopied(false), 1500);
+    } catch (_) { /* ignore */ }
+  };
 
   // If somehow we land here without a session, send them home.
   useEffect(() => {
@@ -81,6 +93,10 @@ const Onboarding = () => {
       const payload = {};
       if (bio !== (profile?.user?.bio || "")) payload.bio = bio;
       if (avatarFile) payload.avatar = avatarFile;
+      const trimmedNick = (nickname || "").trim();
+      if (trimmedNick && trimmedNick !== (profile?.user?.name || "")) {
+        payload.name = trimmedNick;
+      }
       if (Object.keys(payload).length > 0) {
         const data = await updateProfile(payload, token);
         // Mirror updated user fields into the cached profile.
@@ -133,8 +149,9 @@ const Onboarding = () => {
               className="mx-auto mt-4 max-w-md text-sm leading-6 text-muted animate-fade-up"
               style={{ animationDelay: "1.3s" }}
             >
-              Your secret key (or passkey) is your identity. Keep it close,
-              share your QR with friends, and that's it — you own your account.
+              Your passkey is your identity — the same one across every
+              Elastos app on this device. Nothing to remember, nothing to
+              lose.
             </p>
 
             <button
@@ -201,8 +218,24 @@ const Onboarding = () => {
               </div>
             </div>
 
-            {/* Bio */}
+            {/* Nickname */}
             <div className="mt-6 space-y-1.5">
+              <label className="text-xs uppercase tracking-wider text-muted">
+                Nickname
+              </label>
+              <input
+                type="text"
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                disabled={busy}
+                maxLength={30}
+                placeholder="What should friends call you?"
+                className="frosted-input w-full text-sm disabled:opacity-50"
+              />
+            </div>
+
+            {/* Bio */}
+            <div className="mt-4 space-y-1.5">
               <label className="flex items-center justify-between text-xs uppercase tracking-wider text-muted">
                 <span>Bio</span>
                 <span
@@ -223,6 +256,27 @@ const Onboarding = () => {
                 className="frosted-input w-full text-sm disabled:opacity-50"
               />
             </div>
+
+            {/* DID share box — symmetric to Hey Chat's add-contact UX. */}
+            {didKey && (
+              <div className="mt-4 rounded-xl border border-surface-border bg-white/5 p-3">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-muted">
+                  Your DID — share this with friends so they can find you
+                </div>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <code className="flex-1 font-mono text-[11px] text-primary/90 break-all">
+                    {didKey}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={handleCopyDid}
+                    className="shrink-0 rounded-md bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-primary hover:bg-accent hover:text-accent-text transition-colors"
+                  >
+                    {didCopied ? "Copied ✓" : "Copy"}
+                  </button>
+                </div>
+              </div>
+            )}
 
             {error && (
               <p className="mt-3 text-sm text-red-500 dark:text-red-400">

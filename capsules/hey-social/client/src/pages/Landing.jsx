@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
+import { signInViaRuntime, passkeySupported } from "../api/passkey";
 import { signUp } from "../api/auth";
-import { passkeySignup, passkeySupported } from "../api/passkey";
 import { setProfile } from "../hooks/useProfile";
 import { copyToClipboard } from "../utils/clipboard";
 
@@ -224,77 +223,76 @@ const ArrowCue = () => (
 
 const Landing = () => {
   const navigate = useNavigate();
-  const [name, setName] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  const [generatedKey, setGeneratedKey] = useState(null);
-  // Auth profile from signup, held locally until the user clicks "Continue".
-  // If we wrote it to localStorage immediately, Home would react to the auth
-  // change and unmount us mid-flow before the user could save the key.
-  const [pendingProfile, setPendingProfile] = useState(null);
-  const [copied, setCopied] = useState(false);
-  const [passkeyBusy, setPasskeyBusy] = useState(false);
   const canUsePasskey = passkeySupported();
 
-  const handlePasskeySignup = async () => {
+  // Recovery-key fallback state (secondary path for users without a
+  // passkey-capable authenticator, or who explicitly prefer the
+  // write-down-a-string model).
+  const [showRecovery, setShowRecovery] = useState(false);
+  const [recoveryName, setRecoveryName] = useState("");
+  const [generatedKey, setGeneratedKey] = useState(null);
+  const [pendingProfile, setPendingProfile] = useState(null);
+  const [keyCopied, setKeyCopied] = useState(false);
+
+  const handlePasskey = async () => {
     setError(null);
-    if (!name.trim()) {
-      setError("Pick a nickname first.");
-      return;
-    }
-    setPasskeyBusy(true);
+    setBusy(true);
     try {
-      const data = await passkeySignup(name.trim());
-      const profile = {
+      const data = await signInViaRuntime();
+      setProfile({
         user: data.user,
         accessToken: data.accessToken,
         refreshToken: data.refreshToken,
-      };
-      setProfile(profile);
+      });
       navigate("/welcome");
     } catch (err) {
-      setError(err.response?.data?.message || err.message || "Passkey sign-up failed.");
+      const msg = err?.message || "Passkey sign-in failed.";
+      // User-cancel: the WebAuthn API throws NotAllowedError. Don't
+      // surface a scary message; just let them try again.
+      if (/NotAllowedError|AbortError|cancelled|canceled/i.test(msg)) {
+        setError("Passkey prompt closed. Tap to try again.");
+      } else {
+        setError(msg);
+      }
     } finally {
-      setPasskeyBusy(false);
+      setBusy(false);
     }
   };
 
-  const handleSubmit = async (event) => {
-    event.preventDefault();
+  const handleGenerateKey = async () => {
     setError(null);
-    if (!name.trim()) {
-      setError("Pick a nickname to continue.");
+    if (!recoveryName.trim()) {
+      setError("Pick a nickname for the recovery-key path.");
       return;
     }
-
-    setLoading(true);
+    setBusy(true);
     try {
-      const data = await signUp({ name: name.trim() });
-      const profile = {
+      const data = await signUp({ name: recoveryName.trim() });
+      setPendingProfile({
         user: data.user,
         accessToken: data.accessToken,
         refreshToken: data.refreshToken,
-      };
-      setPendingProfile(profile);
+      });
       setGeneratedKey(data.authKey);
     } catch (err) {
-      setError(err.response?.data?.message || "Could not create account.");
+      setError(err?.response?.data?.message || err?.message || "Could not generate key.");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
-  const handleCopy = async () => {
+  const handleCopyKey = async () => {
     if (!generatedKey) return;
     const ok = await copyToClipboard(generatedKey);
     if (ok) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      setKeyCopied(true);
+      setTimeout(() => setKeyCopied(false), 1500);
     }
   };
 
-  const handleContinue = () => {
-    // Commit auth now that the user has had a chance to save their key.
+  const handleRecoveryContinue = () => {
     if (pendingProfile) setProfile(pendingProfile);
     navigate("/welcome");
   };
@@ -306,7 +304,7 @@ const Landing = () => {
       <div className="relative z-10 mx-auto max-w-2xl text-center">
         <p
           className="mb-6 text-xs uppercase tracking-[0.4em] text-muted animate-fade-in"
-          style={{ animationDelay: "0.8s" }}
+          style={{ animationDelay: "0.6s" }}
         >
           Your own social media on Elastos
         </p>
@@ -315,161 +313,137 @@ const Landing = () => {
 
         <p
           className="mx-auto mt-4 max-w-lg text-base leading-7 text-muted animate-fade-up"
-          style={{ animationDelay: "1.3s" }}
+          style={{ animationDelay: "1.0s" }}
         >
-          Share images, react with any emoji, repost in a tap. No email, no password.
-          Just pick a nickname and we'll generate your secret key.
+          Photo, video, and chat — peer-to-peer over Elastos. Sign in with the same
+          passkey you used to set up this device. No password, no recovery key.
         </p>
 
         <div
-          className="relative mx-auto mt-16 max-w-md animate-fade-up"
-          style={{ animationDelay: "1.6s" }}
+          className="relative mx-auto mt-12 max-w-sm animate-fade-up"
+          style={{ animationDelay: "1.3s" }}
         >
-          <ArrowCue />
-
-          <form
-            onSubmit={handleSubmit}
-            className="frosted-card flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:gap-2 sm:p-2"
-          >
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={loading}
-              maxLength={30}
-              placeholder="Pick a nickname"
-              autoFocus
-              className="unfrost flex-1 rounded-2xl bg-transparent px-4 py-3 text-base text-primary outline-none placeholder:text-muted sm:py-2.5"
-            />
-            <button
-              type="submit"
-              disabled={loading || !name.trim()}
-              className="unfrost group inline-flex items-center justify-center gap-2 rounded-full bg-accent px-6 py-3 text-sm font-semibold text-accent-text shadow-lg shadow-slate-900/20 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2.5"
-            >
-              {loading ? (
-                "Generating..."
-              ) : (
-                <>
-                  Generate key
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-4 w-4 fill-none stroke-current stroke-[2] transition-transform duration-200 group-hover:translate-x-1"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M5 12h14M13 5l7 7-7 7" />
-                  </svg>
-                </>
-              )}
-            </button>
-          </form>
-
-          {error && (
-            <p className="mt-3 animate-fade-in text-sm text-red-400">{error}</p>
-          )}
-
-          {canUsePasskey && (
+          {canUsePasskey ? (
             <button
               type="button"
-              onClick={handlePasskeySignup}
-              disabled={passkeyBusy || loading || !name.trim()}
-              className="unfrost mt-4 inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/5 px-5 py-2 text-xs font-medium text-primary transition hover:bg-white/10 disabled:opacity-50 animate-fade-in"
-              style={{ animationDelay: "1.9s" }}
+              onClick={handlePasskey}
+              disabled={busy}
+              className="unfrost group inline-flex w-full items-center justify-center gap-3 rounded-full bg-accent px-8 py-4 text-base font-semibold text-accent-text shadow-xl shadow-slate-900/25 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-current">
+              <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current">
                 <path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5Zm-3 8V7a3 3 0 0 1 6 0v3H9Z" />
               </svg>
-              {passkeyBusy ? "Waiting for passkey..." : "Sign up with a passkey instead"}
+              {busy ? "Waiting for passkey…" : "Sign in with passkey"}
             </button>
+          ) : (
+            <div className="frosted-card p-5 text-sm text-muted">
+              Your browser doesn't support passkeys. Hey needs a passkey-capable
+              browser (modern Chrome / Edge / Safari / Firefox).
+            </div>
+          )}
+
+          {error && (
+            <p className="mt-4 animate-fade-in text-sm text-red-400">{error}</p>
           )}
 
           <p
-            className="mt-6 text-xs text-muted animate-fade-in"
-            style={{ animationDelay: "2s" }}
+            className="mt-8 text-xs text-muted animate-fade-in"
+            style={{ animationDelay: "1.6s" }}
           >
-            Already have a key?{" "}
-            <button
-              type="button"
-              onClick={() => window.dispatchEvent(new CustomEvent("open-signin"))}
-              className="unfrost text-accent transition hover:underline"
-            >
-              Sign in
-            </button>
+            One tap. Same passkey as System. Nothing to remember.
           </p>
-        </div>
-      </div>
 
-      {generatedKey && createPortal(
-        <div className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-56 animate-fade-in bg-black/35 backdrop-blur-sm">
-          <div className="relative h-fit w-full max-w-md space-y-4 rounded-3xl p-6 text-left animate-pop-in backdrop-blur-[80px] bg-white/95 ring-1 ring-white/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.7),0_18px_40px_-10px_rgba(0,0,0,0.45)] dark:bg-neutral-900/95 dark:ring-white/15 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_18px_40px_-10px_rgba(0,0,0,0.65)]">
-            <header className="flex items-center gap-2">
-              <span className="inline-flex h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-              <p className="text-xs uppercase tracking-wider text-emerald-600 dark:text-emerald-300">
-                Welcome, {name.trim()}
-              </p>
-            </header>
-            <p className="text-sm text-muted">
-              This is your secret key. <strong className="text-primary">Save it now</strong> — it's the only way to sign back in.
-            </p>
-            <p className="select-all break-all rounded-lg bg-black/10 px-3 py-2 text-center font-mono text-xs text-primary/90 dark:bg-white/5">
-              {generatedKey}
-            </p>
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="unfrost w-full rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-accent-text transition hover:bg-amber-300"
-            >
-              {copied ? "Copied ✓" : "Copy key"}
-            </button>
-
-            <div className="relative flex justify-center pt-2">
-              <div className="relative inline-block">
+          {/* Recovery-key fallback — for users without a passkey-capable
+              authenticator, or who explicitly want the write-it-down model. */}
+          {!generatedKey && (
+            <div className="mt-8 border-t border-surface-border pt-6 text-left animate-fade-in">
+              {!showRecovery ? (
                 <button
                   type="button"
-                  onClick={handleContinue}
-                  style={{ backgroundColor: "rgb(34 197 94)" }}
-                  className="group inline-flex flex-none items-center justify-center gap-1.5 rounded-full border-2 border-green-600 px-5 py-2 text-xs font-semibold text-white shadow-md shadow-green-900/30 transition hover:!bg-green-600"
+                  onClick={() => setShowRecovery(true)}
+                  className="unfrost mx-auto block text-xs text-muted underline-offset-4 hover:text-primary hover:underline transition-colors"
                 >
-                  Continue
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-3.5 w-3.5 fill-none stroke-current stroke-[2] transition-transform duration-200 group-hover:translate-x-1"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M5 12h14M13 5l7 7-7 7" />
-                  </svg>
+                  No passkey? Use a recovery key instead
                 </button>
-
-                {/* Floating comic-style speech bubble above-and-to-the-right of the button */}
-                <div className="caret-cue pointer-events-none absolute bottom-full left-full mb-1 -ml-4 whitespace-nowrap">
-                  <div className="relative inline-block rounded-2xl border-2 border-slate-900 bg-accent px-3 py-1.5 text-center text-xs font-bold uppercase leading-tight tracking-wider text-accent-text shadow-[3px_3px_0_rgba(15,23,42,1)]">
-                    I have
-                    <br />
-                    saved it!
-                    {/* Tail at bottom-left of bubble pointing down-left toward the button */}
-                    <svg
-                      viewBox="0 0 24 24"
-                      className="absolute -bottom-3 left-2 h-4 w-4"
-                      aria-hidden="true"
+              ) : (
+                <div className="frosted-card p-4 space-y-3">
+                  <div className="flex items-baseline justify-between">
+                    <p className="text-xs uppercase tracking-wider text-muted">
+                      Recovery key
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => { setShowRecovery(false); setRecoveryName(""); setError(null); }}
+                      className="unfrost text-[11px] text-muted hover:text-primary transition-colors"
                     >
-                      <path
-                        d="M4 2 L20 2 L4 22 Z"
-                        fill="var(--accent)"
-                        stroke="#0f172a"
-                        strokeWidth="2"
-                        strokeLinejoin="round"
-                      />
-                      <path d="M4 2 L20 2" stroke="var(--accent)" strokeWidth="2.5" />
-                    </svg>
+                      Hide
+                    </button>
                   </div>
+                  <p className="text-[12px] leading-relaxed text-muted">
+                    We'll generate a 32-byte secret you must save somewhere safe. Lose it,
+                    lose your account.
+                  </p>
+                  <input
+                    type="text"
+                    value={recoveryName}
+                    onChange={(e) => setRecoveryName(e.target.value)}
+                    disabled={busy}
+                    maxLength={30}
+                    placeholder="Pick a nickname"
+                    className="unfrost w-full rounded-xl bg-white/5 px-3 py-2 text-sm text-primary outline-none placeholder:text-muted border border-surface-border focus:border-accent"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleGenerateKey}
+                    disabled={busy || !recoveryName.trim()}
+                    className="unfrost w-full rounded-full border border-surface-border bg-white/5 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {busy ? "Generating…" : "Generate a recovery key"}
+                  </button>
                 </div>
-              </div>
+              )}
             </div>
-          </div>
-        </div>,
-        document.body
-      )}
+          )}
+
+          {/* Generated recovery key panel — replaces the form once the
+              key exists. User copies + clicks Continue. */}
+          {generatedKey && (
+            <div className="mt-8 animate-pop-in frosted-card p-5 text-left space-y-4">
+              <header className="flex items-center gap-2">
+                <span className="inline-flex h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+                <p className="text-xs uppercase tracking-wider text-emerald-600 dark:text-emerald-300">
+                  Welcome, {recoveryName.trim()}
+                </p>
+              </header>
+              <p className="text-sm text-muted">
+                This is your recovery key.{" "}
+                <strong className="text-primary">Save it now</strong> — it's the only way to sign back in.
+              </p>
+              <p className="select-all break-all rounded-lg bg-black/10 px-3 py-2 text-center font-mono text-xs text-primary/90 dark:bg-white/5">
+                {generatedKey}
+              </p>
+              <button
+                type="button"
+                onClick={handleCopyKey}
+                className="unfrost w-full rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-accent-text transition hover:bg-amber-300"
+              >
+                {keyCopied ? "Copied ✓" : "Copy key"}
+              </button>
+              <button
+                type="button"
+                onClick={handleRecoveryContinue}
+                style={{ backgroundColor: "rgb(34 197 94)" }}
+                className="group inline-flex w-full items-center justify-center gap-2 rounded-full border-2 border-green-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-green-900/30 transition hover:!bg-green-600"
+              >
+                I saved it — continue
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-none stroke-current stroke-[2]" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12h14M13 5l7 7-7 7" />
+                </svg>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
