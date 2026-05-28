@@ -60,6 +60,35 @@ aren't. Each links to where the truth is documented.
   scheme is reserved but no built-in capsule implements it. Use
   `GET /api/session`.
 
+### Provider proxy allowlist (the diagnostic you'll almost certainly hit)
+
+- **A 403 on `/api/provider/<scheme>/<op>` calls is almost always the
+  gateway provider proxy allowlist**, NOT a capability-token failure.
+  Upstream v0.3's gateway hardcodes `allowed_apps = {documents,
+  library, system, wallet, browser}` for the {peer, content, did,
+  ipfs, ...} schemes. If your capsule isn't in that set, every
+  provider call 403s **before the capability check even runs**.
+  Source: `elastos/crates/elastos-server/src/api/gateway_provider_proxy.rs`
+  (cited in [docs/runtime-contract.md](docs/runtime-contract.md)
+  section A.2).
+- **YNH fork's patch 0001 opens REDEMPTION only.** It adds hey-social
+  + hey-messenger to the `/runtime-token` allowlist so we can mint a
+  bearer/cookie. It does NOT add us to the provider proxy allowlist.
+  So as of 2026-05-29 hey-social can authenticate but every
+  Carrier/content/DID call still 403s.
+- **There are exactly three options if you hit this:**
+  1. Extend the fork patch (one diff: append hey-social + hey-messenger
+     to the provider allowlist alongside the redemption opening).
+     Rebuild runtime once.
+  2. File an upstream PR to make the allowlist configurable. Same
+     diff in `Elacity/elastos-runtime`; takes weeks but the fork's
+     patch shrinks afterward.
+  3. Accept that hey-social can authenticate but can't DO anything
+     on this runtime — browse the feed, see empty everything.
+- **You CANNOT bypass this from inside the Hey pack.** There's no
+  client-side trick. The runtime is the gatekeeper. Anyone proposing
+  an in-capsule workaround for a 401→403 pattern is wrong.
+
 ### Manifests
 
 - **`capsule.json` is `#[serde(deny_unknown_fields)]`** — any typo or

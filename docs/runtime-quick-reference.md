@@ -15,6 +15,8 @@
 
 - **`/api/apps/<id>/session/start` exists ONLY for chat-room in upstream.** It's not a generic per-app route. Source: `gateway_room.rs:78-108`. For hey-social to use this pattern we'd need either a runtime patch adding a generic handler OR a YNH-side route.
 
+- **The gateway provider proxy has a SEPARATE allowlist from the redemption endpoint.** This is the gate that makes a 401 → 403 with Hey today. Upstream v0.3's `gateway_provider_proxy.rs` hardcodes `allowed_apps = {documents, library, system, wallet, browser}` for `/api/provider/{peer,content,did,ipfs,...}/<op>`. YNH-fork patch 0001 opens `/runtime-token` (so we can mint a bearer) but does NOT add hey-social to the provider proxy allowlist. Net: Hey can authenticate; every Carrier / content / DID call still 403s. Three options: extend the fork patch, file upstream PR, or accept no real capability access. Cannot be bypassed in-capsule.
+
 - **Cookies are `home-session`, `room-session`, `browser-session`** — all HttpOnly, Path=/, SameSite=Lax, +Secure under TLS. Source: `gateway.rs:118-120`, `gateway_home_token.rs:66-79`.
 
 - **All `/api/localhost/Users/*` direct HTTP access returns 403 unconditionally.** `reject_principal_root_storage_path` runs BEFORE capability check. The capsule must NOT hit `/api/localhost/Users/self/...` paths directly; principal-scoped writes go through `/api/provider/<scheme>/<op>` so the runtime can inject `principal_id`. Source: `handlers/storage.rs:504-511`.
