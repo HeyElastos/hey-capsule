@@ -482,6 +482,26 @@ export const _setStorageRouteMode = (mode) => {
   }
 };
 
+// ─── Session helpers ───────────────────────────────────────────────
+//
+// Upstream-canonical "who am I" for the current launch. Same shape as
+// Hey Social's session.current() — boot adoption uses it to detect
+// the runtime user without prompting for a recovery key or passkey.
+
+const authHeaderForSession = () =>
+  RUNTIME_TOKEN ? { Authorization: `Bearer ${RUNTIME_TOKEN}` } : {};
+
+export const session = {
+  current: async () => {
+    await bearerReady.catch(() => false);
+    const r = await fetch(apiUrl("/api/session"), {
+      credentials: "include",
+      headers: authHeaderForSession(),
+    });
+    return r.ok ? r.json() : null;
+  },
+};
+
 // ─── Error type ────────────────────────────────────────────────────
 
 export class RuntimeError extends Error {
