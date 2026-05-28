@@ -21,9 +21,10 @@ use wasm_bindgen::JsCast;
 use web_sys::{HtmlInputElement, KeyboardEvent};
 
 use crate::api::dms::{
-    list_contacts, mark_read, read_conversation, send_message, DmContact, DmMessage,
+    get_expiry_secs, list_contacts, mark_read, prune_expired, read_conversation, send_message,
+    set_expiry_secs, DmContact, DmMessage,
 };
-use crate::components::icons::{ArrowRightIcon, ChatIcon};
+use crate::components::icons::{ArrowRightIcon, ChatIcon, PlusIcon};
 use crate::components::{FloatingDock, NavLink, TopHeader};
 
 #[component]
@@ -56,6 +57,7 @@ pub fn Chat() -> impl IntoView {
             return;
         }
         spawn_local(async move {
+            prune_expired(&did).await;
             let msgs = read_conversation(&did).await;
             messages.set(msgs);
             mark_read(&did).await;
@@ -123,18 +125,92 @@ pub fn Chat() -> impl IntoView {
 
 #[component]
 fn ContactList(contacts: RwSignal<Vec<DmContact>>, active_did: Signal<String>) -> impl IntoView {
+    let new_did_input = RwSignal::new(String::new());
+    let new_chat_error = RwSignal::new(String::new());
+    let new_chat_open = RwSignal::new(false);
+    let navigate = use_navigate();
+
+    let start_chat = {
+        let navigate = navigate.clone();
+        move || {
+            let d = new_did_input.get().trim().to_string();
+            if !d.starts_with("did:key:z") {
+                new_chat_error.set("Enter a did:key:z… identity.".into());
+                return;
+            }
+            new_chat_error.set(String::new());
+            new_did_input.set(String::new());
+            new_chat_open.set(false);
+            navigate(&format!("/chat/{d}"), NavigateOptions::default());
+        }
+    };
+
     view! {
         <div class="w-full flex flex-col">
-            <header class="px-4 py-3 border-b border-surface flex items-baseline justify-between">
+            <header class="px-4 py-3 border-b border-surface flex items-center justify-between">
                 <h2 class="logo-handwritten text-3xl text-primary">"Chat"</h2>
-                <span class="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-emerald-400" title="End-to-end encrypted with ML-KEM-768 + X25519 hybrid post-quantum + ChaCha20-Poly1305. First message in a thread is plaintext until both sides exchange pubkeys.">
-                    <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3" y="11" width="18" height="11" rx="2" />
-                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                    </svg>
-                    "E2E · PQ-hybrid"
-                </span>
+                <div class="flex items-center gap-2">
+                    <button
+                        type="button"
+                        on:click=move |_| new_chat_open.update(|v| *v = !*v)
+                        class="icon-btn-ghost p-2"
+                        aria-label="Start new chat"
+                        title="Start chat with a DID"
+                    >
+                        <PlusIcon class="h-4 w-4" />
+                    </button>
+                    <span class="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-emerald-400" title="End-to-end encrypted with ML-KEM-768 + X25519 hybrid post-quantum + ChaCha20-Poly1305. First message in a thread is plaintext until both sides exchange pubkeys.">
+                        <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="11" width="18" height="11" rx="2" />
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        </svg>
+                        "E2E · PQ"
+                    </span>
+                </div>
             </header>
+
+            // Inline new-chat panel (opens via the + button).
+            {move || if new_chat_open.get() {
+                let start_now = start_chat.clone();
+                view! {
+                    <div class="px-4 py-3 border-b border-surface bg-white/5 space-y-2 animate-fade-in">
+                        <input
+                            type="text"
+                            class="frosted-input text-sm"
+                            placeholder="did:key:z… of the person you want to chat with"
+                            prop:value=move || new_did_input.get()
+                            on:input=move |ev: web_sys::Event| {
+                                if let Some(t) = ev.target() {
+                                    if let Ok(i) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                        new_did_input.set(i.value());
+                                    }
+                                }
+                            }
+                            on:keydown={
+                                let start_now = start_now.clone();
+                                move |ev: web_sys::KeyboardEvent| {
+                                    if ev.key() == "Enter" {
+                                        ev.prevent_default();
+                                        start_now();
+                                    }
+                                }
+                            }
+                        />
+                        {move || {
+                            let m = new_chat_error.get();
+                            if m.is_empty() { view! { <></> }.into_any() }
+                            else { view! { <p class="text-xs text-red-400">{m}</p> }.into_any() }
+                        }}
+                        <button
+                            type="button"
+                            on:click=move |_| start_now()
+                            class="unfrost w-full rounded-full bg-accent hover:bg-amber-300 text-accent-text font-semibold px-3 py-1.5 text-xs"
+                        >
+                            "Start chat"
+                        </button>
+                    </div>
+                }.into_any()
+            } else { view! { <></> }.into_any() }}
             {move || {
                 let list = contacts.get();
                 if list.is_empty() {
@@ -214,6 +290,34 @@ fn Conversation(
         .map(display_name)
         .unwrap_or_else(|| short_did(&did));
 
+    // Load + update the per-chat expiry setting.
+    let expiry_secs = RwSignal::new(0i64);
+    {
+        let did_for_load = did.clone();
+        Effect::new(move |_| {
+            let d = did_for_load.clone();
+            spawn_local(async move {
+                expiry_secs.set(get_expiry_secs(&d).await);
+            });
+        });
+    }
+    let on_expiry_change = {
+        let did_for_set = did.clone();
+        move |ev: web_sys::Event| {
+            let Some(t) = ev.target() else { return };
+            let Ok(sel) = t.dyn_into::<web_sys::HtmlSelectElement>() else { return };
+            let secs: i64 = sel.value().parse().unwrap_or(0);
+            let d = did_for_set.clone();
+            spawn_local(async move {
+                let _ = set_expiry_secs(&d, secs).await;
+                expiry_secs.set(secs);
+                prune_expired(&d).await;
+                let msgs = read_conversation(&d).await;
+                messages.set(msgs);
+            });
+        }
+    };
+
     let on_input = move |ev: web_sys::Event| {
         if let Some(t) = ev.target() {
             if let Ok(i) = t.dyn_into::<HtmlInputElement>() {
@@ -285,12 +389,24 @@ fn Conversation(
                 </NavLink>
                 <p class="text-[10px] font-mono text-muted truncate">{short_did(&did)}</p>
             </div>
+            <select
+                class="frosted-input !rounded-full !py-1 !px-2 text-[11px] !w-auto hidden sm:inline-block"
+                title="Auto-delete messages after this much time has passed."
+                on:change=on_expiry_change
+            >
+                <option value="0" selected=move || expiry_secs.get() == 0>"Keep forever"</option>
+                <option value="3600" selected=move || expiry_secs.get() == 3600>"1 hour"</option>
+                <option value="86400" selected=move || expiry_secs.get() == 86400>"1 day"</option>
+                <option value="604800" selected=move || expiry_secs.get() == 604800>"1 week"</option>
+                <option value="2592000" selected=move || expiry_secs.get() == 2592000>"30 days"</option>
+            </select>
+
             <span class="hidden sm:inline-flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] text-emerald-300" title="End-to-end encrypted with ML-KEM-768 (FIPS 203 post-quantum) + X25519 + ChaCha20-Poly1305. First message in a thread is plaintext until both sides exchange pubkeys; subsequent messages are encrypted.">
                 <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="11" width="18" height="11" rx="2" />
                     <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
-                "E2E · PQ-hybrid"
+                "E2E · PQ"
             </span>
         </header>
 

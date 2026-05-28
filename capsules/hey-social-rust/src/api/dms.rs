@@ -38,6 +38,7 @@ use crate::session;
 
 const CONTACTS_FILE: &str = "dm/contacts.json";
 const PEER_KEYS_FILE: &str = "dm/peer-keys.json";
+const EXPIRY_FILE: &str = "dm/expiry.json";
 
 fn conv_path(did: &str) -> String {
     let safe = did.replace(['/', ':'], "_");
@@ -138,6 +139,59 @@ pub async fn mark_read(did: &str) {
 
 pub async fn total_unread() -> u32 {
     list_contacts().await.iter().map(|c| c.unread).sum()
+}
+
+// ── Message expiry ────────────────────────────────────────────────────
+//
+// Per-contact TTL in seconds. 0 = keep forever (default). On every
+// read_conversation we prune messages older than (now - ttl).
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ExpiryMap {
+    #[serde(default)]
+    map: HashMap<String, i64>,
+}
+
+async fn read_expiry() -> ExpiryMap {
+    storage::read_json(EXPIRY_FILE)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
+}
+
+async fn write_expiry(m: &ExpiryMap) -> Result<(), RuntimeError> {
+    let v = serde_json::to_value(m).map_err(|e| RuntimeError::new(format!("serialize: {e}")))?;
+    storage::write_json(EXPIRY_FILE, &v).await
+}
+
+pub async fn get_expiry_secs(did: &str) -> i64 {
+    read_expiry().await.map.get(did).copied().unwrap_or(0)
+}
+
+pub async fn set_expiry_secs(did: &str, secs: i64) -> Result<(), RuntimeError> {
+    let mut m = read_expiry().await;
+    if secs <= 0 {
+        m.map.remove(did);
+    } else {
+        m.map.insert(did.into(), secs);
+    }
+    write_expiry(&m).await
+}
+
+/// Prune messages whose ts is older than now - ttl. Idempotent.
+pub async fn prune_expired(did: &str) {
+    let ttl = get_expiry_secs(did).await;
+    if ttl <= 0 {
+        return;
+    }
+    let cutoff = now_ms() - ttl * 1000;
+    let conv = read_conversation(did).await;
+    if conv.iter().any(|m| m.ts < cutoff) {
+        let kept: Vec<DmMessage> = conv.into_iter().filter(|m| m.ts >= cutoff).collect();
+        let _ = write_conversation(did, &kept).await;
+    }
 }
 
 // ── peer key cache ─────────────────────────────────────────────────
