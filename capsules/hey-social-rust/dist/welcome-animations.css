@@ -211,3 +211,13 @@ html.light .frosted-card-strong {
   100% { transform: scale(1)    rotate(0deg); opacity: 1; }
 }
 .pop-in { animation: pop-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* Modal vertical anchor — viewport-relative so popups stay well below
+   the topbar at any iframe height. Tailwind's arbitrary-value classes
+   (pt-[22vh]) don't ship in the prebuilt styles.css; this rule does. */
+.modal-anchor {
+  padding-top: 28vh;
+}
+@media (min-width: 640px) {
+  .modal-anchor { padding-top: 22vh; }
+}
