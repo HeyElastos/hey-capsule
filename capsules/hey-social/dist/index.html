@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self';" />
+    <link rel="icon" type="image/svg+xml" href="hey-icon.svg" />
+    <title>Hey</title>
+    
+<script type="module">
+import init, * as bindings from './hey-social-93303ca7382221b5.js';
+const wasm = await init({ module_or_path: './hey-social-93303ca7382221b5_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+    
+    
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="welcome-animations.css" />
+    <script>
+      // Theme: respect prefers-color-scheme on first load, then persist
+      // any user-toggled value. Matches the React capsule's behavior so
+      // the dark/light CSS variables in styles.css resolve correctly.
+      (function () {
+        try {
+          var saved = localStorage.getItem("hey-theme");
+          var dark = saved
+            ? saved === "dark"
+            : window.matchMedia("(prefers-color-scheme: dark)").matches;
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.classList.toggle("light", !dark);
+        } catch (_) {
+          document.documentElement.classList.add("dark");
+        }
+      })();
+    </script>
+    <script>
+      // WebAuthn shim. Bridges between Rust's JSON-friendly view of the
+      // ceremony and the browser's ArrayBuffer-shaped WebAuthn API. Mirrors
+      // simplewebauthn/browser::startAuthentication so the Rust caller and
+      // the React caller produce structurally identical assertions.
+      //
+      // Input  (window.heyPasskeyAuthenticate):  the `publicKey` field of
+      //        upstream's /authenticate/begin response, with binary fields
+      //        as base64url strings (challenge, allowCredentials[].id).
+      // Output: { id, rawId, type, response: { clientDataJSON,
+      //          authenticatorData, signature, userHandle },
+      //          clientExtensionResults }
+      //        — all binary fields base64url-encoded as strings.
+      (function () {
+        const b64uEncode = (buf) => {
+          const bytes = new Uint8Array(buf);
+          let bin = "";
+          for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+          return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        };
+        const b64uDecode = (s) => {
+          const pad = (4 - (s.length % 4)) % 4;
+          const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat(pad);
+          const bin = atob(b64);
+          const out = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+          return out;
+        };
+
+        window.heyPasskeyAuthenticate = async function (options) {
+          if (!options || !options.challenge) {
+            throw new Error("heyPasskeyAuthenticate: missing options.challenge");
+          }
+          // WebAuthn requires ArrayBuffer/View for every binary field —
+          // challenge, allowCredentials[].id, AND extensions.prf.eval.{first,second}.
+          // The Rust caller passes all of these as base64url strings; decode each.
+          const decodePrfInput = (v) => {
+            if (v === undefined || v === null) return undefined;
+            if (typeof v === "string") return b64uDecode(v).buffer;
+            return v;
+          };
+          let extensions = options.extensions;
+          if (extensions && extensions.prf && extensions.prf.eval) {
+            extensions = {
+              ...extensions,
+              prf: {
+                ...extensions.prf,
+                eval: {
+                  ...(extensions.prf.eval.first !== undefined
+                    ? { first: decodePrfInput(extensions.prf.eval.first) }
+                    : {}),
+                  ...(extensions.prf.eval.second !== undefined
+                    ? { second: decodePrfInput(extensions.prf.eval.second) }
+                    : {}),
+                },
+              },
+            };
+          }
+          const publicKey = {
+            ...options,
+            challenge: b64uDecode(options.challenge),
+            allowCredentials: (options.allowCredentials || []).map((c) => ({
+              ...c,
+              id: typeof c.id === "string" ? b64uDecode(c.id) : c.id,
+            })),
+            ...(extensions !== undefined ? { extensions } : {}),
+          };
+          const cred = await navigator.credentials.get({ publicKey });
+          const ext = (cred.getClientExtensionResults && cred.getClientExtensionResults()) || {};
+          // PRF outputs come back as ArrayBuffers — re-encode to base64url
+          // so the Rust side sees a string (same shape simplewebauthn returns).
+          const prf = ext.prf;
+          const extOut = { ...ext };
+          if (prf && prf.results) {
+            extOut.prf = {
+              ...prf,
+              results: {
+                ...(prf.results.first !== undefined
+                  ? { first: prf.results.first instanceof ArrayBuffer ? b64uEncode(prf.results.first) : prf.results.first }
+                  : {}),
+                ...(prf.results.second !== undefined
+                  ? { second: prf.results.second instanceof ArrayBuffer ? b64uEncode(prf.results.second) : prf.results.second }
+                  : {}),
+              },
+            };
+          }
+          return {
+            id: cred.id,
+            rawId: b64uEncode(cred.rawId),
+            type: cred.type || "public-key",
+            response: {
+              clientDataJSON: b64uEncode(cred.response.clientDataJSON),
+              authenticatorData: b64uEncode(cred.response.authenticatorData),
+              signature: b64uEncode(cred.response.signature),
+              userHandle: cred.response.userHandle ? b64uEncode(cred.response.userHandle) : null,
+            },
+            clientExtensionResults: extOut,
+          };
+        };
+
+        window.heyPasskeySupported = function () {
+          return typeof window.PublicKeyCredential === "function";
+        };
+      })();
+    </script>
+  <link rel="modulepreload" href="./hey-social-93303ca7382221b5.js" crossorigin="anonymous" integrity="sha384-C5hHuffljsoBgHL75zLH+t+uAMesRuR5zID0Xv5la9Fz8q2RXYGj/EaYqLlqdcTl"><link rel="preload" href="./hey-social-93303ca7382221b5_bg.wasm" crossorigin="anonymous" integrity="sha384-jntcWGxRYc3sWfbWg8pO9dgikBaB1H5blWas8N1NB3fo7wfsDqRmtn3uKcdPZakD" as="fetch" type="application/wasm"></head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

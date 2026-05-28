@@ -1,16 +1,18 @@
 {
   "schema": "elastos.capsule/v1",
   "name": "hey-social",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Hey Social — photo, video, and chat on Elastos. Federated peer-to-peer via Carrier; media on IPFS; sovereign identity via passkey + did:key.",
   "author": "HeyElastos",
   "role": "app",
   "type": "data",
-  "entrypoint": "index.html",
+  "entrypoint": "dist/index.html",
   "permissions": {
     "storage": [
       "localhost://Users/*/Hey/*",
       "localhost://Users/self/.AppData/LocalHost/Hey/*",
+      "localhost://Users/*/.AppData/ElastOS/Identity/*",
+      "localhost://Users/self/.AppData/ElastOS/Identity/*",
       "localhost://Users/*/.AppData/Identity/*",
       "localhost://Users/self/.AppData/Identity/*",
       "localhost://Users/*/.AppData/SystemServices/Shell/*",
@@ -20,7 +22,8 @@
       "elastos://peer/hey-v0/*",
       "elastos://ipfs/*",
       "elastos://did/*",
-      "elastos://hey-transcoder/*"
+      "elastos://hey-transcoder/*",
+      "elastos://elacity/*"
     ]
   },
   "resources": {
