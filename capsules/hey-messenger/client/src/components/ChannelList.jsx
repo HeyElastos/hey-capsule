@@ -26,23 +26,45 @@ const Chevron = ({ open }) => (
   </svg>
 );
 
-const SectionHeader = ({ open, onToggle, count, children }) => (
+const SectionHeader = ({ open, onToggle, count, children, action }) => (
+  <div className="flex items-center pr-1">
+    <button
+      onClick={onToggle}
+      className="
+        group flex flex-1 items-center gap-1.5
+        px-2.5 pt-3 pb-1.5
+        text-[10px] font-semibold uppercase tracking-wider
+        text-zinc-500 dark:text-zinc-400
+        hover:text-zinc-700 dark:hover:text-zinc-200
+        transition-colors
+      "
+    >
+      <Chevron open={open} />
+      <span className="flex-1 truncate text-left">{children}</span>
+      {typeof count === "number" && (
+        <span className="text-zinc-400 dark:text-zinc-500 font-medium">{count}</span>
+      )}
+    </button>
+    {action}
+  </div>
+);
+
+const PlusIconBtn = ({ title, onClick }) => (
   <button
-    onClick={onToggle}
+    type="button"
+    title={title}
+    onClick={onClick}
+    aria-label={title}
     className="
-      group flex w-full items-center gap-1.5
-      px-2.5 pt-3 pb-1.5
-      text-[10px] font-semibold uppercase tracking-wider
-      text-zinc-500 dark:text-zinc-400
-      hover:text-zinc-700 dark:hover:text-zinc-200
+      flex h-5 w-5 items-center justify-center rounded
+      text-zinc-400 dark:text-zinc-500
+      hover:bg-amber-500/15 hover:text-amber-600 dark:hover:text-amber-400
       transition-colors
     "
   >
-    <Chevron open={open} />
-    <span className="flex-1 truncate text-left">{children}</span>
-    {typeof count === "number" && (
-      <span className="text-zinc-400 dark:text-zinc-500 font-medium">{count}</span>
-    )}
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M7 3h2v4h4v2H9v4H7V9H3V7h4z" />
+    </svg>
   </button>
 );
 
@@ -67,21 +89,20 @@ const Row = ({ active, onClick, children, badge }) => (
   </button>
 );
 
-// Light divider between collapsible groups.
 const Divider = () => (
   <div className="mx-2.5 my-1 h-px bg-zinc-200/70 dark:bg-zinc-800/70" />
 );
 
-export default function ChannelList() {
+export default function ChannelList({ onAddContact }) {
   const { state, setThread } = useStore();
   const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-  const channels = state.channelsByWorkspace[state.activeWorkspaceId] || [];
-  const dms = state.dmsByWorkspace[state.activeWorkspaceId] || [];
+  const channels = state.channelsByWorkspace?.[state.activeWorkspaceId] || [];
+  const contacts = state.contactsByWorkspace[state.activeWorkspaceId] || [];
 
-  // Per-section open state. Default both open. Persists within the
-  // session — moving between workspaces preserves the user's choice.
-  // Not in the store because it's purely view-local; sync to upstream
-  // when we have a settings sink.
+  // Channels are a Phase-4 feature (need iroh-docs CRDT). Keep the
+  // section header off until they exist; the empty list is honest.
+  const showChannels = channels.length > 0;
+
   const [channelsOpen, setChannelsOpen] = useState(true);
   const [dmsOpen, setDmsOpen] = useState(true);
 
@@ -94,64 +115,78 @@ export default function ChannelList() {
         border-r border-zinc-200/60 dark:border-zinc-800/60
       "
     >
-      {/* Workspace title — the "team" header in Teams' hierarchy. */}
       <div className="px-3 py-3 border-b border-zinc-200/60 dark:border-zinc-800/60">
-        <div className="flex items-center gap-2">
-          <div className="text-sm font-semibold tracking-tight truncate flex-1">
-            {ws?.name}
-          </div>
+        <div className="text-sm font-semibold tracking-tight truncate">
+          {ws?.name || "Hey Chat"}
         </div>
         <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-          {channels.length} channels · {dms.length} DMs
+          {contacts.length} {contacts.length === 1 ? "contact" : "contacts"}
+          {showChannels ? ` · ${channels.length} channels` : ""}
         </div>
       </div>
 
-      {/* Scroll body: expandable Channels + DM groups. Tighter row
-          spacing than before — Teams reads at info-density, not
-          comfort-density. */}
       <div className="flex-1 overflow-y-auto px-1.5 pb-3">
-        <SectionHeader
-          open={channelsOpen}
-          onToggle={() => setChannelsOpen((v) => !v)}
-          count={channels.length}
-        >
-          Channels
-        </SectionHeader>
-        {channelsOpen && channels.map((c) => (
-          <Row
-            key={c.id}
-            active={c.id === state.activeThreadId}
-            onClick={() => setThread(c.id)}
-            badge={c.unread || undefined}
-          >
-            <span className="text-zinc-500 dark:text-zinc-500">#</span> {c.name}
-          </Row>
-        ))}
-
-        {dms.length > 0 && (
+        {showChannels && (
           <>
-            <Divider />
             <SectionHeader
-              open={dmsOpen}
-              onToggle={() => setDmsOpen((v) => !v)}
-              count={dms.length}
+              open={channelsOpen}
+              onToggle={() => setChannelsOpen((v) => !v)}
+              count={channels.length}
             >
-              Direct messages
+              Channels
             </SectionHeader>
-            {dmsOpen && dms.map((d) => (
+            {channelsOpen && channels.map((c) => (
               <Row
-                key={d.id}
-                active={d.id === state.activeThreadId}
-                onClick={() => setThread(d.id)}
+                key={c.id}
+                active={c.id === state.activeThreadId}
+                onClick={() => setThread(c.id)}
+                badge={c.unread || undefined}
               >
-                <span className="inline-flex items-center gap-2">
-                  <PresenceDot presence={d.presence} />
-                  {d.name}
-                </span>
+                <span className="text-zinc-500 dark:text-zinc-500">#</span> {c.name}
               </Row>
             ))}
+            <Divider />
           </>
         )}
+
+        <SectionHeader
+          open={dmsOpen}
+          onToggle={() => setDmsOpen((v) => !v)}
+          count={contacts.length}
+          action={<PlusIconBtn title="Add contact" onClick={onAddContact} />}
+        >
+          Direct messages
+        </SectionHeader>
+
+        {dmsOpen && contacts.length === 0 && (
+          <div className="mx-2.5 mt-2 rounded-lg border border-dashed border-zinc-300 dark:border-zinc-700 px-3 py-4 text-[12px] text-zinc-500 dark:text-zinc-400">
+            <p>No contacts yet.</p>
+            <button
+              type="button"
+              onClick={onAddContact}
+              className="
+                mt-2 inline-flex items-center gap-1 text-[12px] font-medium
+                text-amber-600 dark:text-amber-400
+                hover:text-amber-700 dark:hover:text-amber-300
+              "
+            >
+              + Add someone by DID
+            </button>
+          </div>
+        )}
+
+        {dmsOpen && contacts.map((d) => (
+          <Row
+            key={d.id}
+            active={d.id === state.activeThreadId}
+            onClick={() => setThread(d.id)}
+          >
+            <span className="inline-flex items-center gap-2 truncate">
+              <PresenceDot presence={d.presence} />
+              <span className="truncate">{d.name}</span>
+            </span>
+          </Row>
+        ))}
       </div>
     </aside>
   );

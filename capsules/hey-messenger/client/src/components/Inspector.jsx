@@ -93,10 +93,7 @@ const uniqueParticipants = (messages, me) => {
 };
 
 const labelFor = (state) => {
-  const chans = state.channelsByWorkspace[state.activeWorkspaceId] || [];
-  const dms = state.dmsByWorkspace[state.activeWorkspaceId] || [];
-  const c = chans.find((x) => x.id === state.activeThreadId);
-  if (c) return `#${c.name}`;
-  const d = dms.find((x) => x.id === state.activeThreadId);
-  return d ? d.name : "thread";
+  const contacts = state.contactsByWorkspace[state.activeWorkspaceId] || [];
+  const c = contacts.find((x) => x.id === state.activeThreadId);
+  return c ? c.name : "thread";
 };

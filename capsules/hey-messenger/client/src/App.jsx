@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { StoreProvider, useStore } from "./state/store.jsx";
 import WorkspaceRail from "./components/WorkspaceRail.jsx";
 import ChannelList from "./components/ChannelList.jsx";
@@ -6,21 +6,20 @@ import Conversation from "./components/Conversation.jsx";
 import Composer from "./components/Composer.jsx";
 import Inspector from "./components/Inspector.jsx";
 import EncryptionBadge from "./components/EncryptionBadge.jsx";
-import { startInbox, dmTopic, channelTopic } from "./lib/inbox.js";
+import AddContactModal from "./components/AddContactModal.jsx";
+import { startInbox, dmTopic } from "./lib/inbox.js";
 import { publishOwnBundle } from "./lib/profile.js";
 import { getDidKey } from "./lib/session.js";
 
-const ChannelHeader = () => {
+const ChannelHeader = ({ onAddContact }) => {
   const { state, toggleInspector, setSearch } = useStore();
-  const chans = state.channelsByWorkspace[state.activeWorkspaceId] || [];
-  const dms   = state.dmsByWorkspace[state.activeWorkspaceId]   || [];
-  const c = chans.find((x) => x.id === state.activeThreadId);
-  const d = dms.find((x) => x.id === state.activeThreadId);
-  const name = c ? `# ${c.name}` : d ? d.name : "—";
-  const subtitle = c ? "channel" : d ? "direct message" : "";
-  // E2E is only honest when (a) this is a DM and (b) we have the peer's
-  // resolved pubkey bundle. Mock DMs carry no DID so they stay transit-only.
-  const encKind = d && d.did ? "e2e" : "transit";
+  const contacts = state.contactsByWorkspace[state.activeWorkspaceId] || [];
+  const d = contacts.find((x) => x.id === state.activeThreadId);
+  const name = d ? d.name : "—";
+  const subtitle = d ? "direct message" : "no thread selected";
+  // E2E only honest when (a) it's a DM (b) we have the peer's DID.
+  // Every contact has a DID now (no mock fallback), so DM → e2e.
+  const encKind = d ? "e2e" : "transit";
   return (
     <header
       className="
@@ -36,11 +35,9 @@ const ChannelHeader = () => {
           <div className="text-base font-semibold tracking-tight truncate">{name}</div>
           <div className="text-[11px] text-zinc-500 dark:text-zinc-400">{subtitle}</div>
         </div>
-        <EncryptionBadge kind={encKind} />
+        {d && <EncryptionBadge kind={encKind} />}
       </div>
 
-      {/* Search — filters the current channel's messages on the
-          client. Real filter, real value cleared on thread switch. */}
       <div className="flex-1 max-w-sm ml-auto">
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 dark:text-zinc-500 pointer-events-none">
@@ -50,7 +47,8 @@ const ChannelHeader = () => {
             type="search"
             value={state.searchQuery}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={`Search in ${c ? `#${c.name}` : d ? d.name : "thread"}`}
+            placeholder={d ? `Search in ${d.name}` : "Search"}
+            disabled={!d}
             className="
               w-full rounded-lg pl-9 pr-3 py-1.5 text-[13px]
               bg-zinc-100/70 dark:bg-zinc-800/60
@@ -58,6 +56,7 @@ const ChannelHeader = () => {
               text-zinc-900 dark:text-zinc-100
               placeholder:text-zinc-400 dark:placeholder:text-zinc-500
               outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/30
+              disabled:opacity-50 disabled:cursor-not-allowed
               transition
             "
           />
@@ -65,8 +64,9 @@ const ChannelHeader = () => {
       </div>
 
       <div className="flex items-center gap-1">
-        {/* Video call — coming in Phase 2. Disabled + tooltip is the
-            honest signal; not a fake button that swallows clicks. */}
+        <IconBtn title="Add contact" onClick={onAddContact}>
+          <PlusIcon />
+        </IconBtn>
         <button
           disabled
           title="Video calls — coming soon (P2P over Carrier-signaled WebRTC)"
@@ -114,49 +114,36 @@ const Backdrop = ({ children }) => (
   </div>
 );
 
-// Compute the live list of Carrier topics for the active workspace.
-// The inbox poller calls this each tick so adding/removing channels
-// or DMs takes effect without re-mounting.
+// Build the live list of Carrier topics for the active workspace.
+// Each contact's DM topic is canonical between the two DIDs (sorted),
+// so both peers' messengers agree on the topic string.
 const buildTopicList = (state) => {
   const myDid = state.currentUser.did;
-  const channels = state.channelsByWorkspace[state.activeWorkspaceId] || [];
-  const dms = state.dmsByWorkspace[state.activeWorkspaceId] || [];
-  const out = [];
-  for (const c of channels) {
-    out.push({
-      id: c.id,
-      topic: channelTopic(state.activeWorkspaceId, c.id),
-      kind: "channel",
-    });
-  }
-  for (const d of dms) {
-    out.push({
-      id: d.id,
-      topic: d.did ? dmTopic(myDid, d.did) : `hey-msg/v0/dm-mock/${d.id}`,
-      kind: "dm",
-    });
-  }
-  return out;
+  if (!myDid) return [];
+  const contacts = state.contactsByWorkspace[state.activeWorkspaceId] || [];
+  return contacts.map((c) => ({
+    id: c.id,
+    topic: dmTopic(myDid, c.did),
+    kind: "dm",
+  }));
 };
 
 const Shell = () => {
-  const { state, appendMessage } = useStore();
+  const { state, ready, appendMessage, addContact } = useStore();
+  const [addOpen, setAddOpen] = useState(false);
 
-  // Boot the inbox poller + publish our profile bundle once.
+  // Boot the inbox poller + publish our profile bundle once. Re-runs
+  // when the workspace or current user changes so the topic list
+  // matches what's on screen.
   useEffect(() => {
-    if (!getDidKey()) {
-      // Not signed in — skip wiring; user can still browse the UI shell.
-      return;
-    }
+    if (!ready) return;
+    if (!getDidKey()) return; // adoption-only mode: read-only, no Carrier wiring yet
     publishOwnBundle().catch((err) => {
       console.warn("[hey-messenger] profile bundle publish failed", err);
     });
     const stop = startInbox({
       topics: () => buildTopicList(state),
       onMessage: ({ threadId, message }) => {
-        // Pull plaintext out — decrypted-payload first, encrypted-but-unreadable
-        // gets a placeholder. Skip our own echoes (inbox already filters by
-        // skip_sender_id but defense in depth).
         if (message.sender_did === state.currentUser.did) return;
         const payload = message.payload_decrypted ?? message.payload ?? {};
         appendMessage(threadId, {
@@ -172,23 +159,71 @@ const Shell = () => {
     });
     return () => stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.activeWorkspaceId, state.currentUser.did]);
+  }, [ready, state.activeWorkspaceId, state.currentUser.did]);
+
+  if (!ready) {
+    return (
+      <Backdrop>
+        <div className="flex h-full items-center justify-center text-sm text-zinc-500 dark:text-zinc-400">
+          Loading…
+        </div>
+      </Backdrop>
+    );
+  }
 
   return (
     <Backdrop>
       <div className="relative z-10 flex h-full">
         <WorkspaceRail />
-        <ChannelList />
+        <ChannelList onAddContact={() => setAddOpen(true)} />
         <main className="flex flex-1 flex-col min-w-0">
-          <ChannelHeader />
-          <Conversation />
-          <Composer />
+          <ChannelHeader onAddContact={() => setAddOpen(true)} />
+          {state.activeThreadId ? (
+            <>
+              <Conversation />
+              <Composer />
+            </>
+          ) : (
+            <EmptyState onAddContact={() => setAddOpen(true)} canSign={state.currentUser.canSign} />
+          )}
         </main>
         {state.inspectorOpen && <Inspector />}
       </div>
+      <AddContactModal open={addOpen} onClose={() => setAddOpen(false)} />
     </Backdrop>
   );
 };
+
+const EmptyState = ({ onAddContact, canSign }) => (
+  <div className="flex flex-1 items-center justify-center px-6">
+    <div className="max-w-md text-center">
+      <div className="text-5xl mb-3">💬</div>
+      <h2 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+        No conversations yet
+      </h2>
+      <p className="mt-2 text-[14px] text-zinc-500 dark:text-zinc-400">
+        Add a friend by their DID to start a peer-to-peer, end-to-end-encrypted chat.
+        File transfers go direct via iroh-blobs — no size limit, no server in the middle.
+      </p>
+      <button
+        type="button"
+        onClick={onAddContact}
+        className="
+          mt-5 inline-flex items-center rounded-lg
+          bg-amber-500 px-4 py-2 text-[14px] font-semibold text-white
+          hover:bg-amber-600 transition-colors
+        "
+      >
+        Add a contact
+      </button>
+      {!canSign && (
+        <p className="mt-4 text-[12px] text-zinc-500 dark:text-zinc-500">
+          Reading as your runtime identity. Sending requires unlocking your signing key.
+        </p>
+      )}
+    </div>
+  </div>
+);
 
 export default function App() {
   return (
@@ -215,5 +250,11 @@ const PanelIcon = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="3" width="18" height="18" rx="2" />
     <line x1="15" y1="3" x2="15" y2="21" />
+  </svg>
+);
+const PlusIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
   </svg>
 );

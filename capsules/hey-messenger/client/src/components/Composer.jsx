@@ -4,37 +4,25 @@ import { blobs, peer, RuntimeError } from "../lib/runtime.js";
 import { createSignedEvent } from "../lib/events.js";
 import { encryptToHybrid } from "../lib/pqcrypto.js";
 import { resolveBundle } from "../lib/profile.js";
-import { dmTopic, channelTopic } from "../lib/inbox.js";
+import { dmTopic } from "../lib/inbox.js";
 import { getKeypair } from "../lib/session.js";
 import AttachmentPill from "./AttachmentPill.jsx";
 
 const localId = () => `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-// Identify the active thread. DMs in mock data are id'd "dm-<name>";
-// real DMs will be keyed by the peer's DID. We treat the latter as
-// authoritative when present; the former routes through groups for now.
+// Identify the active thread. Contacts are keyed by their DID; the
+// DM topic is canonical between the two DIDs (sorted). Channels are
+// a Phase-4 feature, gated behind iroh-docs; for now everything in
+// the contact list is a DM.
 const classifyThread = (state) => {
-  const dms = state.dmsByWorkspace[state.activeWorkspaceId] || [];
-  const chans = state.channelsByWorkspace[state.activeWorkspaceId] || [];
-  const dm = dms.find((d) => d.id === state.activeThreadId);
+  const contacts = state.contactsByWorkspace[state.activeWorkspaceId] || [];
+  const dm = contacts.find((c) => c.id === state.activeThreadId);
   if (dm) {
     return {
       kind: "dm",
       thread: dm,
-      // Real DM topics need both DIDs. Mock entries don't carry one yet —
-      // fall back to a stable per-id topic so wiring is end-to-end even
-      // when E2E is unavailable.
-      topic: dm.did ? dmTopic(state.currentUser.did, dm.did) : `hey-msg/v0/dm-mock/${dm.id}`,
-      peerDid: dm.did || null,
-    };
-  }
-  const ch = chans.find((c) => c.id === state.activeThreadId);
-  if (ch) {
-    return {
-      kind: "channel",
-      thread: ch,
-      topic: channelTopic(state.activeWorkspaceId, ch.id),
-      peerDid: null,
+      topic: state.currentUser.did ? dmTopic(state.currentUser.did, dm.did) : null,
+      peerDid: dm.did,
     };
   }
   return { kind: "unknown", thread: null, topic: null, peerDid: null };
@@ -340,13 +328,9 @@ export default function Composer() {
 }
 
 const threadLabel = (state) => {
-  const chans = state.channelsByWorkspace[state.activeWorkspaceId] || [];
-  const dms   = state.dmsByWorkspace[state.activeWorkspaceId]   || [];
-  const c = chans.find((x) => x.id === state.activeThreadId);
-  if (c) return `#${c.name}`;
-  const d = dms.find((x) => x.id === state.activeThreadId);
-  if (d) return d.name;
-  return "thread";
+  const contacts = state.contactsByWorkspace[state.activeWorkspaceId] || [];
+  const c = contacts.find((x) => x.id === state.activeThreadId);
+  return c ? c.name : "thread";
 };
 
 const PaperclipIcon = () => (
