@@ -430,13 +430,11 @@ fn PolaroidGrid(
                         let click_remove = move |_| remove(id_for_remove.clone());
                         let is_video = f.mime.starts_with("video/");
                         view! {
-                            <div class="polaroid pop-in" style="width: 9.5rem;">
-                                <span class="tape" />
-                                <div class="relative w-full aspect-square overflow-hidden rounded-sm bg-slate-200">
+                            <div class="win-frame pop-in" style="width: 9.5rem;">
+                                <div class="win-media relative w-full aspect-square bg-slate-900">
                                     {if is_video {
                                         view! {
                                             <video
-                                                class="block w-full h-full object-cover bg-black"
                                                 src=f.preview_url.clone()
                                                 muted=true
                                             />
@@ -444,7 +442,6 @@ fn PolaroidGrid(
                                     } else {
                                         view! {
                                             <img
-                                                class="block w-full h-full object-cover"
                                                 src=f.preview_url.clone()
                                                 alt=f.name.clone()
                                             />
@@ -453,7 +450,7 @@ fn PolaroidGrid(
                                     <button
                                         type="button"
                                         on:click=click_remove
-                                        class="absolute top-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/65 text-white hover:bg-rose-500 backdrop-blur-sm transition-colors"
+                                        class="absolute top-1.5 right-1.5 z-10 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/65 text-white hover:bg-rose-500 backdrop-blur-sm transition-colors"
                                         aria-label="Remove"
                                         title="Remove"
                                     >
@@ -463,16 +460,13 @@ fn PolaroidGrid(
                                     </button>
                                     {if is_video {
                                         view! {
-                                            <span class="pointer-events-none absolute bottom-1.5 left-1.5 inline-flex items-center gap-1 rounded-full bg-black/65 px-1.5 py-0.5 text-[9px] text-white">
+                                            <span class="pointer-events-none absolute bottom-1.5 left-1.5 z-10 inline-flex items-center gap-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] text-white">
                                                 <svg viewBox="0 0 24 24" class="h-2.5 w-2.5" fill="currentColor"><path d="M5 4l14 8-14 8z" /></svg>
                                                 "Video"
                                             </span>
                                         }.into_any()
                                     } else { view! { <></> }.into_any() }}
                                 </div>
-                                <p class="mt-2 px-1 text-center text-[10px] font-medium text-slate-700 truncate" style="font-family: 'Caveat', cursive;">
-                                    {f.name.clone()}
-                                </p>
                             </div>
                         }
                     }
