@@ -4,7 +4,8 @@
 // that sends the user to /home. Polish parity is a follow-up.
 
 use leptos::prelude::*;
-use leptos_router::components::A;
+
+use crate::components::NavLink;
 
 #[component]
 pub fn Onboarding() -> impl IntoView {
@@ -18,12 +19,12 @@ pub fn Onboarding() -> impl IntoView {
                     <p class="mt-3 text-sm text-muted">
                         "You're signed in. Your DID is anchored to your passkey — every Hey app on this node will recognize you automatically."
                     </p>
-                    <A
+                    <NavLink
                         href="/"
-                        attr:class="unfrost mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-accent-text shadow-md transition hover:bg-amber-300"
+                        class="unfrost mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-accent-text shadow-md transition hover:bg-amber-300"
                     >
                         "Go to feed"
-                    </A>
+                    </NavLink>
                 </div>
             </div>
         </section>

@@ -46,7 +46,9 @@ pub fn Landing() -> impl IntoView {
                 match sign_in_via_runtime(None).await {
                     Ok(_session) => {
                         busy.set(false);
-                        navigate("/home", NavigateOptions::default());
+                        // Matches the React Landing handler: route to /welcome
+                        // so first-time users see Onboarding before the feed.
+                        navigate("/welcome", NavigateOptions::default());
                     }
                     Err(msg) => {
                         busy.set(false);

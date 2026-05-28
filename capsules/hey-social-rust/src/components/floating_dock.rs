@@ -1,53 +1,50 @@
-// FloatingDock — 1:1 port of capsules/hey-social/client/src/components/
-// FloatingDock.jsx. Left-side vertical column, frosted glass, icon-btn
-// links to feed / new-post / chat / profile / bell / search.
-//
-// The .floating-dock CSS class (defined in styles.css) handles all the
-// positioning + frosted background. We only emit the structural markup
-// + the icon children with the matching class strings.
+// FloatingDock — left-side vertical column, frosted glass, with icon-btn
+// links to feed / new-post / chat / profile. Uses NavLink instead of <A>
+// so the Router base is applied to absolute hrefs even inside an iframe
+// sandbox where <A>'s click interceptor doesn't fire reliably.
 
 use leptos::prelude::*;
-use leptos_router::components::A;
 
 use crate::components::icons::{ChatIcon, HomeIcon, PlusIcon, UserIcon};
+use crate::components::NavLink;
 
 #[component]
 pub fn FloatingDock() -> impl IntoView {
     view! {
-        <aside class="floating-dock rounded-[2rem] shadow-2xl shadow-slate-950/40 hidden md:flex md:flex-col">
+        <aside class="floating-dock rounded-[2rem] shadow-2xl shadow-slate-950/40 flex flex-col">
             <nav class="flex flex-col items-stretch gap-1 p-2">
-                <A
+                <NavLink
                     href="/"
-                    attr:class="icon-btn h-12 w-12 mx-auto"
-                    attr:title="Feed"
-                    attr:aria-label="Feed"
+                    class="icon-btn h-12 w-12 mx-auto"
+                    title="Feed"
+                    aria_label="Feed"
                 >
                     <HomeIcon class="h-6 w-6" />
-                </A>
-                <A
+                </NavLink>
+                <NavLink
                     href="/posts"
-                    attr:class="icon-btn h-12 w-12 mx-auto"
-                    attr:title="New post"
-                    attr:aria-label="New post"
+                    class="icon-btn h-12 w-12 mx-auto"
+                    title="New post"
+                    aria_label="New post"
                 >
                     <PlusIcon class="h-6 w-6" />
-                </A>
-                <A
+                </NavLink>
+                <NavLink
                     href="/chat"
-                    attr:class="icon-btn h-12 w-12 mx-auto"
-                    attr:title="Chat"
-                    attr:aria-label="Chat"
+                    class="icon-btn h-12 w-12 mx-auto"
+                    title="Chat"
+                    aria_label="Chat"
                 >
                     <ChatIcon class="h-6 w-6" />
-                </A>
-                <A
+                </NavLink>
+                <NavLink
                     href="/profile"
-                    attr:class="icon-btn h-12 w-12 mx-auto"
-                    attr:title="Profile"
-                    attr:aria-label="Profile"
+                    class="icon-btn h-12 w-12 mx-auto"
+                    title="Profile"
+                    aria_label="Profile"
                 >
                     <UserIcon class="h-6 w-6" />
-                </A>
+                </NavLink>
             </nav>
         </aside>
     }

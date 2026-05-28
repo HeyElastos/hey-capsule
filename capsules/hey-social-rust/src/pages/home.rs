@@ -7,11 +7,9 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::components::A;
-
 use crate::api::posts::{get_posts, Post};
 use crate::components::icons::CameraIcon;
-use crate::components::{FloatingDock, PostCard, TopHeader};
+use crate::components::{FloatingDock, NavLink, PostCard, TopHeader};
 use crate::pages::landing::Landing;
 use crate::session;
 
@@ -142,10 +140,10 @@ fn EmptyState() -> impl IntoView {
                 >
                     "Start here"
                 </span>
-                <A
+                <NavLink
                     href="/posts"
-                    attr:style="background-color: rgb(34 197 94)"
-                    attr:class="group inline-flex items-center gap-2 rounded-full border-2 border-green-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-green-900/30 transition hover:!bg-green-600"
+                    style="background-color: rgb(34 197 94)"
+                    class="group inline-flex items-center gap-2 rounded-full border-2 border-green-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-green-900/30 transition hover:!bg-green-600"
                 >
                     "Share your first photo"
                     <svg
@@ -156,7 +154,7 @@ fn EmptyState() -> impl IntoView {
                     >
                         <path d="M5 12h14M13 5l7 7-7 7" />
                     </svg>
-                </A>
+                </NavLink>
             </div>
         </div>
     }

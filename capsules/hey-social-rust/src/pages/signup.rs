@@ -5,7 +5,8 @@
 // the user back to System and offers a link to the sign-in screen.
 
 use leptos::prelude::*;
-use leptos_router::components::A;
+
+use crate::components::NavLink;
 
 #[component]
 pub fn SignUp() -> impl IntoView {
@@ -19,12 +20,12 @@ pub fn SignUp() -> impl IntoView {
                     <p class="mt-3 text-sm text-muted">
                         "Hey uses the same passkey across every app on this node. Open System (the home dock), create a passkey, then come back here to sign in."
                     </p>
-                    <A
+                    <NavLink
                         href="/"
-                        attr:class="unfrost mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-accent-text shadow-md transition hover:bg-amber-300"
+                        class="unfrost mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-accent-text shadow-md transition hover:bg-amber-300"
                     >
                         "Back to sign in"
-                    </A>
+                    </NavLink>
                 </div>
             </div>
         </section>

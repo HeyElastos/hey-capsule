@@ -3,7 +3,8 @@
 // over the content from each page that wants it.
 
 use leptos::prelude::*;
-use leptos_router::components::A;
+
+use crate::components::NavLink;
 
 #[component]
 pub fn NotFound() -> impl IntoView {
@@ -12,12 +13,12 @@ pub fn NotFound() -> impl IntoView {
             <div class="animate-fade-up">
                 <h1 class="logo-handwritten text-7xl text-muted">"404"</h1>
                 <p class="mt-3 text-sm text-muted">"Page not found."</p>
-                <A
+                <NavLink
                     href="/"
-                    attr:class="unfrost mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-accent-text shadow-md transition hover:bg-amber-300"
+                    class="unfrost mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-accent-text shadow-md transition hover:bg-amber-300"
                 >
                     "Go home"
-                </A>
+                </NavLink>
             </div>
         </section>
     }

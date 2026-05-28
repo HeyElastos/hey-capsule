@@ -4,11 +4,9 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::components::A;
-
 use crate::api::posts::{get_posts, Post};
 use crate::components::icons::VideoIcon;
-use crate::components::{FloatingDock, PostCard, TopHeader};
+use crate::components::{FloatingDock, NavLink, PostCard, TopHeader};
 
 #[component]
 pub fn Clips() -> impl IntoView {
@@ -56,12 +54,12 @@ pub fn Clips() -> impl IntoView {
                             <p class="mx-auto mt-3 max-w-sm text-sm text-muted">
                                 "Record something short, sweet and sovereign. Clips show up here the moment they're posted."
                             </p>
-                            <A
+                            <NavLink
                                 href="/posts"
-                                attr:class="unfrost mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-accent-text shadow-md transition hover:bg-amber-300"
+                                class="unfrost mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-accent-text shadow-md transition hover:bg-amber-300"
                             >
                                 "Upload a clip"
-                            </A>
+                            </NavLink>
                         </div>
                     }.into_any()
                 } else {

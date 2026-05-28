@@ -12,7 +12,6 @@
 // Pull-request welcome — the protocol spec lives in the React file.
 
 use leptos::prelude::*;
-use leptos_router::components::A;
 
 use crate::components::{FloatingDock, TopHeader};
 
@@ -30,12 +29,14 @@ pub fn Chat() -> impl IntoView {
                     <p class="mt-3 text-sm text-muted max-w-md mx-auto">
                         "End-to-end-encrypted messaging in this Rust port is still being ported (the React reference uses ML-KEM-768 + X25519 hybrid post-quantum crypto — that lives in 1400 lines of JS). Use the standalone Hey Messenger capsule, same passkey, same DID."
                     </p>
-                    <A
+                    // Direct browser href — hey-messenger is a SEPARATE
+                    // capsule, not an internal route, so no NavLink/Router.
+                    <a
                         href="../hey-messenger/"
-                        attr:class="unfrost mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-accent-text shadow-md transition hover:bg-amber-300"
+                        class="unfrost mt-6 inline-flex items-center gap-2 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-accent-text shadow-md transition hover:bg-amber-300"
                     >
                         "Open Hey Messenger"
-                    </A>
+                    </a>
                 </div>
             </div>
         </>
