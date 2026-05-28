@@ -118,7 +118,8 @@ fn FeedSkeleton() -> impl IntoView {
 #[component]
 fn EmptyState() -> impl IntoView {
     view! {
-        <div class="frosted-card relative overflow-hidden animate-fade-up p-10 text-center">
+        <div class="flex items-center justify-center min-h-[55vh]">
+        <div class="frosted-card relative overflow-hidden animate-fade-up p-10 text-center w-full max-w-md">
             <div
                 class="relative mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-white/20 bg-white/10 shadow-lg shadow-slate-900/20 backdrop-blur-xl dark:bg-white/[0.06]"
                 style="-webkit-backdrop-filter: blur(20px)"
@@ -156,6 +157,7 @@ fn EmptyState() -> impl IntoView {
                     </svg>
                 </NavLink>
             </div>
+        </div>
         </div>
     }
 }

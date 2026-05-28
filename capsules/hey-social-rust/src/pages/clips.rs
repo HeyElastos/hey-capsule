@@ -44,7 +44,8 @@ pub fn Clips() -> impl IntoView {
                     }.into_any()
                 } else if video_posts.read().is_empty() {
                     view! {
-                        <div class="frosted-card animate-fade-up p-10 text-center">
+                        <div class="flex items-center justify-center min-h-[55vh]">
+                        <div class="frosted-card animate-fade-up p-10 text-center w-full max-w-md">
                             <div class="inline-flex h-16 w-16 items-center justify-center rounded-2xl border border-white/20 bg-white/10 shadow-lg shadow-slate-900/20 backdrop-blur-xl text-accent">
                                 <VideoIcon class="h-7 w-7" />
                             </div>
@@ -60,6 +61,7 @@ pub fn Clips() -> impl IntoView {
                             >
                                 "Upload a clip"
                             </NavLink>
+                        </div>
                         </div>
                     }.into_any()
                 } else {
