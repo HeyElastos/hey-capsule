@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
-import { acquireBootCapabilities, session as runtimeSession } from "./lib/runtime";
+import { acquireBootCapabilities, session as runtimeSession, passkeyStatus, bearerReady } from "./lib/runtime";
 import { initSession, getDidKey } from "./lib/session";
 import { publishOwnBundle } from "./lib/profile";
 import { readSharedIdentity } from "./lib/shell";
@@ -59,7 +59,9 @@ const boot = async () => {
   // failure: any error falls through to the existing Landing page.
   try {
     const hasLocalProfile = !!localStorage.getItem("profile");
-    if (!hasLocalProfile) {
+    if (hasLocalProfile) {
+      console.info("[hey-adopt] local profile already cached — skipping adoption probe");
+    } else {
       const adopt = (didKey, name, source, extras = {}) => {
         const adopted = {
           user: {
@@ -78,36 +80,72 @@ const boot = async () => {
           adoptionSource: source,
         };
         localStorage.setItem("profile", JSON.stringify(adopted));
-        console.info(`[hey] adopted runtime identity (${source})`, didKey);
+        console.info(`[hey-adopt] ✓ adopted runtime identity via ${source}`, didKey);
       };
+
+      // Wait for the bearer exchange before any probe — every
+      // probe below needs Authorization: Bearer or the runtime's
+      // auth_middleware 401s before the handler runs.
+      const bearerOk = await bearerReady.catch(() => false);
+      console.info(`[hey-adopt] bearer ready = ${bearerOk}`);
 
       // Probe 1: upstream /api/session.
       let adopted = false;
       try {
         const s = await runtimeSession.current();
-        const did = s?.did || s?.didKey || s?.user?.did || s?.user?.didKey || s?.principal_id;
-        if (did) {
-          const name = s?.name || s?.user?.name || s?.display_name || s?.user?.display_name;
-          adopt(did, name, "api/session", {
-            avatar: s?.avatar || s?.user?.avatar,
-            bio: s?.bio || s?.user?.bio,
-          });
-          adopted = true;
+        if (!s) {
+          console.info("[hey-adopt] probe 1 /api/session → null (401 or empty)");
+        } else {
+          const did = s?.did || s?.didKey || s?.user?.did || s?.user?.didKey || s?.principal_id;
+          if (did) {
+            const name = s?.name || s?.user?.name || s?.display_name || s?.user?.display_name;
+            adopt(did, name, "api/session", {
+              avatar: s?.avatar || s?.user?.avatar,
+              bio: s?.bio || s?.user?.bio,
+            });
+            adopted = true;
+          } else {
+            console.info("[hey-adopt] probe 1 /api/session → 200 but no DID field. Response:", s);
+          }
         }
-      } catch (_) { /* probe failure → try next */ }
+      } catch (err) {
+        console.info("[hey-adopt] probe 1 /api/session threw:", err);
+      }
 
-      // Probe 2: shared identity file.
+      // Probe 2: shared identity file (canonical + legacy paths).
       if (!adopted) {
-        const shared = await readSharedIdentity().catch(() => null);
+        const shared = await readSharedIdentity().catch((err) => {
+          console.info("[hey-adopt] probe 2 sharedStorage threw:", err);
+          return null;
+        });
         if (shared?.didKey) {
           adopt(shared.didKey, shared.name, "shared-identity", {
             avatar: shared.avatar, bio: shared.bio,
           });
+          adopted = true;
+        } else {
+          console.info("[hey-adopt] probe 2 shared-identity file → null (upstream home shell may not write it)");
         }
+      }
+
+      // Probe 3 (diagnostic only): upstream's passkey-status. Doesn't
+      // give us a DID but tells us whether a principal exists at all,
+      // which clarifies whether the empty result above means "no
+      // user signed up" (signup is the right next step) or "user
+      // exists but we can't see them" (need a different path —
+      // e.g., an upstream patch).
+      if (!adopted) {
+        const ps = await passkeyStatus();
+        if (ps) {
+          console.info("[hey-adopt] probe 3 /api/auth/passkey/status →", ps);
+        } else {
+          console.info("[hey-adopt] probe 3 /api/auth/passkey/status → null");
+        }
+        console.warn("[hey-adopt] no runtime identity found — falling through to Hey signup. If you signed up via passkey in System, check the [hey-adopt] log lines above to see which probe failed.");
       }
     }
   } catch (err) {
-    console.warn("[hey] identity adoption probe failed", err);
+    console.warn("[hey-adopt] identity adoption probe failed", err);
   }
 
   // Publish our hybrid-PQ pubkey bundle so peers can E2E-encrypt DMs to

@@ -777,13 +777,41 @@ export const capability = {
 };
 
 // ─── Session helpers ───────────────────────────────────────────────
+//
+// /api/session is upstream's "who am I" endpoint. We MUST await the
+// bearer exchange (patch 0001) before calling it — without
+// Authorization: Bearer, the runtime's auth_middleware 401s before
+// the handler runs and we never learn the user's DID. Used at boot
+// by the runtime-identity adoption probe in main.jsx.
 
 export const session = {
-  current: () =>
-    fetch(apiUrl("/api/session"), {
+  current: async () => {
+    await bearerReady.catch(() => false);
+    const r = await fetch(apiUrl("/api/session"), {
       credentials: "include",
       headers: authHeaders(),
-    }).then((r) => (r.ok ? r.json() : null)),
+    });
+    return r.ok ? r.json() : null;
+  },
+};
+
+// Upstream's "has anyone signed up on this node?" endpoint. Returns
+// a JSON object (shape varies by upstream version — often has
+// has_principal/credential_count/etc.) or null on failure. Useful
+// for the adoption probe to distinguish "no user exists" (show
+// signup) from "user exists but we can't read their DID" (show
+// signin or a more helpful empty state).
+export const passkeyStatus = async () => {
+  await bearerReady.catch(() => false);
+  try {
+    const r = await fetch(apiUrl("/api/auth/passkey/status"), {
+      credentials: "include",
+      headers: authHeaders(),
+    });
+    return r.ok ? r.json() : null;
+  } catch (_) {
+    return null;
+  }
 };
 
 // ─── Errors ────────────────────────────────────────────────────────
