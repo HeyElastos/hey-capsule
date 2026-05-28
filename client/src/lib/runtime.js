@@ -2,21 +2,30 @@
 // HTTP surface. Replaces axios calls to Hey's Express backend when the SPA
 // is running inside a WASM capsule.
 //
-// Two endpoints matter most:
+// Three endpoint families matter:
 //
 //   POST /api/provider/:scheme/:op  — capability-gated proxy to any provider.
 //     Carrier ops live under :scheme=peer (gossip_send/recv/join/leave/etc.),
 //     IPFS under :scheme=ipfs (add_bytes/cat/pin/etc.),
 //     DID resolve+sign+verify under :scheme=did.
 //
-//   GET/PUT/DELETE /api/localhost/*path  — sandboxed storage CRUD.
-//     Hey's data dir under localhost://Users/self/.AppData/LocalHost/Hey/*.
-//     Stores profile.json, chat messages, notif state, etc.
+//   GET/PUT/DELETE /api/apps/hey-social/storage/*path  — principal-scoped
+//     storage CRUD for third-party app capsules. Each PUT lands at
+//     localhost://Users/<sha256(principal)[:24]>/<path> on disk, so the
+//     filesystem root is shared with any other capsule launched under the
+//     same user (cross-capsule shared identity). Auth is the launch
+//     envelope (x-elastos-home-token header), NOT the runtime bearer.
+//     v0.3 added this via scripts/patches/0002-capsule-principal-storage.patch
+//     in the YunoHost build; v0.3's stock /api/localhost/Users/* rejects
+//     third-party callers.
 //
-// Auth: capability tokens via X-Capability-Token header. Shell sessions
-// (running inside Home's launched iframe) get a token automatically; outside
-// that we'd need /api/capability/request → grant flow. For now, prefer the
-// shell-session path.
+//   POST /api/apps/hey-social/runtime-token  — trades the home_token launch
+//     envelope for a real session bearer. Required for /api/capability/*
+//     and /api/provider/* which still go through the bearer-gated middleware.
+//     Added by scripts/patches/0001-capsule-runtime-token.patch.
+//
+// Auth: capability tokens via X-Capability-Token header for provider calls;
+// launch envelope via x-elastos-home-token header for storage calls.
 
 // Install base derived from the iframe's URL (e.g. "/elastos" when the
 // runtime is mounted under YunoHost subpath, "" when at root). The same
@@ -29,7 +38,13 @@ const API_BASE = (() => {
 })();
 export const apiUrl = (path) => API_BASE + path;
 
-const STORAGE_BASE = `${API_BASE}/api/localhost/Users/self/.AppData/LocalHost/Hey`;
+// Pulled out so the capsule id is in one place — must match the route name
+// used by the gateway when serving /apps/<name>/ and the :capsule param on
+// /api/apps/:capsule/{runtime-token,storage}.
+const CAPSULE_ID = "hey-social";
+
+const STORAGE_BASE = `${API_BASE}/api/apps/${CAPSULE_ID}/storage/Hey`;
+const SHARED_STORAGE_BASE = `${API_BASE}/api/apps/${CAPSULE_ID}/storage`;
 const PROVIDER_BASE = `${API_BASE}/api/provider`;
 
 // ── Capability tokens ──────────────────────────────────────────────
@@ -43,35 +58,97 @@ const PROVIDER_BASE = `${API_BASE}/api/provider`;
 // We cache acquired tokens in sessionStorage keyed by resource so they
 // survive page navigation within a session but not a full sign-out.
 
-// Runtime API session token. The home gateway mints a Capsule-scope
-// session at launch and embeds it in the iframe URL as ?runtime_token=…
-// Read it once on first import; persist in sessionStorage so navigations
-// within the SPA don't drop it after react-router rewrites the URL.
-//
-// Critical: capability tokens are bound to a specific runtime session
-// (validator checks token's session_id == bearer's session.id). When the
-// runtime restarts — happens on OOM, upgrade, or manual restart — the
-// in-memory SessionRegistry resets, our bearer session_id changes, and
-// every cached capability token from the prior session becomes invalid.
-// Detect that transition by comparing the current URL runtime_token to
-// the one we cached last; if they differ, flush the capability cache.
 const RUNTIME_TOKEN_KEY = "hey-runtime-token";
-const RUNTIME_TOKEN = (() => {
+const HOME_LAUNCH_TOKEN_KEY = "hey-home-launch-token";
+
+// v0.3 auth architecture:
+//   URL  ?home_token=<launch-envelope>  (signed by gateway, scoped to "hey-social")
+//   ─→ POST /api/apps/hey-social/runtime-token
+//       Header: x-elastos-home-token: <launch-envelope>
+//   ─→ Response: { token: <session-bearer> }
+//   ─→ Use the session bearer as Authorization: Bearer for everything else
+//
+// The launch envelope is NOT a Bearer; v0.3's storage / capability /
+// provider handlers want a session token minted via /api/auth/attach.
+// Our YunoHost build patches upstream to add /api/apps/:capsule/
+// runtime-token which trades launch envelope → session bearer (see
+// scripts/patches/0001-capsule-runtime-token.patch). When upstream
+// merges the equivalent, this client code stays valid.
+
+// Pull the launch envelope from URL (fresh launch) or sessionStorage
+// (subsequent navigations within the SPA). Falls back to legacy
+// runtime_token name for v0.2 hosts.
+export const HOME_LAUNCH_TOKEN = (() => {
   if (typeof window === "undefined") return null;
   try {
-    const fromUrl = new URLSearchParams(window.location.search).get("runtime_token");
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get("home_token") || params.get("runtime_token");
     if (fromUrl) {
-      const prev = sessionStorage.getItem(RUNTIME_TOKEN_KEY);
+      const prev = sessionStorage.getItem(HOME_LAUNCH_TOKEN_KEY);
       if (prev && prev !== fromUrl) {
-        // Runtime session changed under us; old caps belong to a dead session.
+        // New launch envelope means upstream restarted or this is a
+        // fresh launch — drop cached tokens since they were bound to a
+        // previous session.
         sessionStorage.removeItem("hey-capability-tokens");
+        sessionStorage.removeItem(RUNTIME_TOKEN_KEY);
       }
-      sessionStorage.setItem(RUNTIME_TOKEN_KEY, fromUrl);
+      sessionStorage.setItem(HOME_LAUNCH_TOKEN_KEY, fromUrl);
       return fromUrl;
     }
+    return sessionStorage.getItem(HOME_LAUNCH_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+})();
+
+// The actual session bearer used for /api/capability/* and /api/provider/*
+// calls. Starts null; bearerReady populates it via the exchange endpoint.
+// We DO NOT read this from URL — only from the exchange endpoint response.
+let RUNTIME_TOKEN = (() => {
+  if (typeof window === "undefined") return null;
+  try {
     return sessionStorage.getItem(RUNTIME_TOKEN_KEY);
   } catch {
     return null;
+  }
+})();
+
+// Boot handshake — exchange the home_token launch envelope for a
+// real session bearer. Resolves to true once RUNTIME_TOKEN is set
+// (either freshly minted this tick, or already in sessionStorage
+// from a prior load within this session). Resolves to false on
+// failure so call sites can decide whether to surface a 401.
+//
+// Capability / provider helpers below await this before issuing any
+// request. Storage helpers do NOT — they use the launch envelope
+// directly via the /api/apps/:capsule/storage/* route.
+export const bearerReady = (async () => {
+  if (RUNTIME_TOKEN) return true;
+  if (!HOME_LAUNCH_TOKEN || typeof window === "undefined") return false;
+  try {
+    const resp = await fetch(apiUrl(`/api/apps/${CAPSULE_ID}/runtime-token`), {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "x-elastos-home-token": HOME_LAUNCH_TOKEN,
+      },
+      body: "{}",
+    });
+    if (!resp.ok) {
+      console.warn(`[hey-social] runtime-token exchange failed: ${resp.status}`);
+      return false;
+    }
+    const data = await resp.json();
+    if (data && typeof data.token === "string" && data.token) {
+      RUNTIME_TOKEN = data.token;
+      try { sessionStorage.setItem(RUNTIME_TOKEN_KEY, RUNTIME_TOKEN); } catch (_) {}
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn("[hey-social] runtime-token exchange error:", err);
+    return false;
   }
 })();
 
@@ -81,6 +158,12 @@ const TOKEN_STORE_KEY = "hey-capability-tokens";
 // the runtime's auth_middleware rejects requests without this with 401.
 const bearerHeaders = () =>
   RUNTIME_TOKEN ? { Authorization: `Bearer ${RUNTIME_TOKEN}` } : {};
+
+// Launch envelope header for the /api/apps/:capsule/storage/* route.
+// That route does NOT go through the bearer middleware; it auths
+// directly off the launch envelope.
+const launchEnvelopeHeaders = () =>
+  HOME_LAUNCH_TOKEN ? { "x-elastos-home-token": HOME_LAUNCH_TOKEN } : {};
 
 const loadTokenStore = () => {
   try {
@@ -119,6 +202,9 @@ const schemeToResource = (scheme) => {
 // Acquire a capability token for the given resource + action. Returns
 // the token string, null if denied, or throws on transport error.
 const requestCapabilityToken = async (resource, action = "write") => {
+  // Wait for the launch-envelope-to-Bearer handshake (or its failure) so
+  // the request below carries Authorization: Bearer when possible.
+  await bearerReady;
   const post = await fetch(apiUrl("/api/capability/request"), {
     method: "POST",
     credentials: "include",
@@ -180,13 +266,9 @@ const authHeaders = (resource, action = "write") => {
   return headers;
 };
 
-// Storage path → capability resource URI. The localhost:// scheme is the
-// canonical form the runtime uses for permission patterns.
-const pathToResource = (path) => `localhost://${path.replace(/^\/+/, "")}`;
-
 // One-call helper: ensure we hold a capability for (resource, action),
 // then return the X-Capability-Token + Authorization header pair ready
-// to spread into a fetch options.headers object. Used by every storage
+// to spread into a fetch options.headers object. Used by every provider
 // call so the validator's exact-action match always finds a token.
 const ensureAuthedHeaders = async (resource, action) => {
   await getCapabilityToken(resource, action);
@@ -430,35 +512,38 @@ export const did = {
   resolve: (did) => providerCall("did", "resolve", { did }),
 };
 
-// ─── Localhost storage CRUD ────────────────────────────────────────
+// ─── Principal-scoped storage CRUD ─────────────────────────────────
+//
+// Routes through /api/apps/hey-social/storage/* (patch 0002). Each
+// PUT lands at localhost://Users/<sha256(principal)[:24]>/<suffix>
+// on disk. Two app capsules launched under the same user share the
+// same root, so cross-capsule shared paths (.AppData/Identity/*)
+// work the way v0.2's /api/localhost/Users/self/* did.
+//
+// Path segments must not contain ".", "..", or "\". The route handler
+// validates this and returns 400 if violated.
 
 const storagePath = (relative) =>
   `${STORAGE_BASE}/${(relative || "").replace(/^\/+/, "")}`;
 
-// Build the localhost:// resource URI the runtime uses for capability
-// matching from a path under STORAGE_BASE.
-const storageResource = (relative) => {
-  const tail = `Users/self/.AppData/LocalHost/Hey/${(relative || "").replace(/^\/+/, "")}`;
-  return `localhost://${tail}`;
-};
-
+// Hey-private storage. Bare relative path → localhost://Users/<hash>/Hey/<path>.
+// e.g. "profile.json" → localhost://Users/<hash>/Hey/profile.json
 export const storage = {
-  // Read a path. Returns parsed JSON or null on 404.
   readJson: async (path) => {
-    const resource = storageResource(path);
-    const headers = await ensureAuthedHeaders(resource, "read");
-    const resp = await fetch(storagePath(path), { credentials: "include", headers });
+    const resp = await fetch(storagePath(path), {
+      credentials: "include",
+      headers: launchEnvelopeHeaders(),
+    });
     if (resp.status === 404) return null;
     if (!resp.ok)
-      throw new RuntimeError(`localhost GET ${path}: HTTP ${resp.status}`);
+      throw new RuntimeError(`storage GET ${path}: HTTP ${resp.status}`);
     return resp.json();
   },
 
   writeJson: async (path, value) => {
-    const resource = storageResource(path);
     const headers = {
       "Content-Type": "application/json",
-      ...(await ensureAuthedHeaders(resource, "write")),
+      ...launchEnvelopeHeaders(),
     };
     const resp = await fetch(storagePath(path), {
       method: "PUT",
@@ -468,7 +553,7 @@ export const storage = {
     });
     if (!resp.ok) {
       const txt = await resp.text().catch(() => "");
-      throw new RuntimeError(`localhost PUT ${path}: HTTP ${resp.status}`, {
+      throw new RuntimeError(`storage PUT ${path}: HTTP ${resp.status}`, {
         status: resp.status,
         body: txt,
       });
@@ -477,53 +562,91 @@ export const storage = {
   },
 
   remove: async (path) => {
-    const resource = storageResource(path);
-    const headers = await ensureAuthedHeaders(resource, "delete");
     const resp = await fetch(storagePath(path), {
       method: "DELETE",
       credentials: "include",
-      headers,
+      headers: launchEnvelopeHeaders(),
     });
     if (!resp.ok && resp.status !== 404)
-      throw new RuntimeError(`localhost DELETE ${path}: HTTP ${resp.status}`);
+      throw new RuntimeError(`storage DELETE ${path}: HTTP ${resp.status}`);
     return true;
   },
 
   list: async (path) => {
-    const resource = storageResource(path);
-    const headers = await ensureAuthedHeaders(resource, "read");
     const resp = await fetch(`${storagePath(path)}?list=true`, {
       credentials: "include",
-      headers,
+      headers: launchEnvelopeHeaders(),
     });
     if (resp.status === 404) return [];
     if (!resp.ok)
-      throw new RuntimeError(`localhost LIST ${path}: HTTP ${resp.status}`);
+      throw new RuntimeError(`storage LIST ${path}: HTTP ${resp.status}`);
+    return resp.json();
+  },
+};
+
+// Shared-namespace storage (paths outside the Hey/ prefix). Used for
+// cross-capsule files like .AppData/Identity/profile.json that the
+// home shell and other capsules under the same principal can read.
+// Caller passes the full suffix under the principal root.
+export const sharedStorage = {
+  readJson: async (suffix) => {
+    const url = `${SHARED_STORAGE_BASE}/${suffix.replace(/^\/+/, "")}`;
+    const resp = await fetch(url, {
+      credentials: "include",
+      headers: launchEnvelopeHeaders(),
+    });
+    if (resp.status === 404) return null;
+    if (!resp.ok)
+      throw new RuntimeError(`sharedStorage GET ${suffix}: HTTP ${resp.status}`);
     return resp.json();
   },
 
-  mkdir: async (path) => {
-    const resp = await fetch(`${storagePath(path)}?mkdir=true`, {
-      method: "POST",
+  writeJson: async (suffix, value) => {
+    const url = `${SHARED_STORAGE_BASE}/${suffix.replace(/^\/+/, "")}`;
+    const headers = {
+      "Content-Type": "application/json",
+      ...launchEnvelopeHeaders(),
+    };
+    const resp = await fetch(url, {
+      method: "PUT",
       credentials: "include",
-      headers: authHeaders(LOCALHOST_RESOURCE),
+      headers,
+      body: JSON.stringify(value),
     });
-    if (!resp.ok && resp.status !== 409)
-      throw new RuntimeError(`localhost MKDIR ${path}: HTTP ${resp.status}`);
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => "");
+      throw new RuntimeError(`sharedStorage PUT ${suffix}: HTTP ${resp.status}`, {
+        status: resp.status,
+        body: txt,
+      });
+    }
+    return true;
+  },
+
+  remove: async (suffix) => {
+    const url = `${SHARED_STORAGE_BASE}/${suffix.replace(/^\/+/, "")}`;
+    const resp = await fetch(url, {
+      method: "DELETE",
+      credentials: "include",
+      headers: launchEnvelopeHeaders(),
+    });
+    if (!resp.ok && resp.status !== 404)
+      throw new RuntimeError(`sharedStorage DELETE ${suffix}: HTTP ${resp.status}`);
     return true;
   },
 };
 
 // ── Boot-time capability acquisition ──────────────────────────────
-// Hey needs write on localhost (its own storage), and message on each
-// provider it actually uses. Acquire them in parallel at app boot so
-// every subsequent call has a real token in its X-Capability-Token
-// header. Each acquire falls through silently to the placeholder if
-// the runtime returns "denied" or isn't gating yet — so this is
-// non-blocking and dev-mode-friendly.
+// Hey needs message on each provider it actually uses. Acquire them in
+// parallel at app boot so every subsequent provider call has a real
+// token in its X-Capability-Token header. Each acquire falls through
+// silently to the placeholder if the runtime returns "denied" or isn't
+// gating yet — so this is non-blocking and dev-mode-friendly.
+//
+// Note: localhost storage is no longer in the list — that route now
+// auths off the launch envelope, not capability tokens.
 export const acquireBootCapabilities = async () => {
   const wants = [
-    { resource: "localhost://*",       action: "write" },
     { resource: "elastos://peer/*",    action: "message" },
     { resource: "elastos://ipfs/*",    action: "write" },
     { resource: "elastos://did/*",     action: "read" },

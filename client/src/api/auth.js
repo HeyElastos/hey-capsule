@@ -1,13 +1,15 @@
 // Hey Social — capsule-only API layer.
 //
 // All data flows through the Elastos Runtime:
-//   - storage:  /api/localhost/Users/self/.AppData/LocalHost/Hey/* (profile,
-//               follows, post cache, notification index)
+//   - storage:  /api/apps/hey-social/storage/Hey/* (profile, follows,
+//               post cache, notification index — per-capsule namespace
+//               under the per-user principal root)
 //   - peer:     /api/provider/peer/* (Carrier gossip — posts, follows, comments)
 //   - ipfs:     /api/provider/ipfs/* (post media + avatar storage)
 //   - did:      /api/provider/did/* (DID resolution for unknown senders)
-//   - shell.js: /api/localhost/Users/self/.AppData/Identity/profile.json
-//               (shared identity with the host shell, e.g. hey-home)
+//   - shell.js: /api/apps/hey-social/storage/.AppData/Identity/profile.json
+//               (shared identity with the host shell, e.g. hey-home —
+//               shares the principal root, sits OUTSIDE the Hey/ prefix)
 //
 // There is no Hey-owned backend. Signing happens with a non-extractable
 // Web Crypto Ed25519 key kept in IndexedDB (see lib/keystore.js).
@@ -21,7 +23,7 @@ import { storage, peer, ipfs } from "../lib/runtime";
 import { setSession, clearSession, getKeypair } from "../lib/session";
 import { deleteSigningKey } from "../lib/keystore";
 import { createSignedEvent } from "../lib/events";
-import { readSharedIdentity, writeSharedIdentity } from "../lib/shell";
+import { readSharedIdentity, writeSharedIdentity, deleteSharedIdentity } from "../lib/shell";
 import * as heyVault from "../lib/vault";
 
 const PROFILE_FILE = "profile.json";
@@ -268,8 +270,7 @@ export const deleteAccount = async () => {
   await tryDo("remove follows",       () => storage.remove(FOLLOWS_FILE));
   await tryDo("remove vault wraps",   () => storage.remove("vault-wraps.json"));
   await tryDo("remove passkey creds", () => storage.remove("passkey-creds.json"));
-  await tryDo("remove shared identity",
-    () => storage.remove("../../Identity/profile.json"));
+  await tryDo("remove shared identity", deleteSharedIdentity);
 
   // 2) Client-side: IndexedDB-stored signing key (non-extractable
   //    CryptoKey persists across cookie clears; only Clear All Site
