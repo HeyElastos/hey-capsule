@@ -1,0 +1,131 @@
+name: verify-dist
+
+# On every push and PR: rebuild the source-controlled WASM bundle for
+# hey-social and the Rust provider binaries, then check that the
+# resulting artifacts match what's committed.
+#
+# Why this exists: the runtime install pipeline ships dist/index.html
+# + the hashed wasm/js straight from this repo. Source and bundle live
+# in the same git history but a contributor can edit either without
+# rebuilding the other. This job catches that drift so the WASM ↔
+# commit relationship stays reviewable: every merge to main must have
+# dist/ matching a clean build off the source in the same commit.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'capsules/hey-social/**'
+      - 'capsules/*-provider/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/verify-dist.yml'
+  pull_request:
+    paths:
+      - 'capsules/hey-social/**'
+      - 'capsules/*-provider/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/verify-dist.yml'
+  workflow_dispatch:
+
+jobs:
+  hey-social-wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (matches rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Share the cache across providers + hey-social — they all
+          # pull the same iroh/serde/tokio stack.
+          shared-key: hey-pack
+
+      - name: Install Trunk
+        run: |
+          cargo install --locked trunk --version 0.21.14
+
+      - name: Snapshot committed dist/ hashes
+        id: before
+        run: |
+          set -euo pipefail
+          cd capsules/hey-social
+          if [ ! -d dist ]; then
+            echo "No committed dist/ — capsule expects one. Failing." >&2
+            exit 1
+          fi
+          # Hash every file in dist/, sort by path, sha256 the whole list.
+          # Independent of trunk's content-addressed filenames.
+          find dist -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sha256sum \
+            | awk '{print $1}' > /tmp/before.sum
+          echo "before=$(cat /tmp/before.sum)" >> "$GITHUB_OUTPUT"
+          echo "committed dist hash: $(cat /tmp/before.sum)"
+
+      - name: Clean rebuild
+        run: |
+          set -euo pipefail
+          cd capsules/hey-social
+          rm -rf dist target
+          trunk build --release
+
+      - name: Compare hashes
+        id: after
+        run: |
+          set -euo pipefail
+          cd capsules/hey-social
+          find dist -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sha256sum \
+            | awk '{print $1}' > /tmp/after.sum
+          AFTER="$(cat /tmp/after.sum)"
+          BEFORE="${{ steps.before.outputs.before }}"
+          echo "rebuilt dist hash: $AFTER"
+          if [ "$AFTER" != "$BEFORE" ]; then
+            echo
+            echo "::error::dist/ does not match a clean rebuild of src/."
+            echo "  Committed:  $BEFORE"
+            echo "  Rebuilt:    $AFTER"
+            echo
+            echo "Run \`trunk build --release\` in capsules/hey-social/ and commit the result."
+            exit 1
+          fi
+          echo "✓ dist/ matches a clean build from this commit."
+
+  providers-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: hey-pack
+
+      - name: Build every Rust provider
+        run: |
+          set -euo pipefail
+          # Workspace default-members includes every provider. We
+          # explicitly `-p` each one so a missing default-members entry
+          # surfaces as a clean failure rather than a silent skip.
+          for provider in \
+              blobs-provider \
+              content-provider \
+              docs-provider \
+              identity-projection-provider \
+              webrtc-signal-provider; do
+            echo "=== Building $provider ==="
+            cargo build --release -p "$provider"
+          done
