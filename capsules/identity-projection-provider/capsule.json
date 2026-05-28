@@ -1,0 +1,16 @@
+{
+  "schema": "elastos.capsule/v1",
+  "name": "identity-projection-provider",
+  "version": "0.0.1",
+  "description": "Projects the runtime principal as a signing did:key. Holds the Ed25519 private key; capsules call sign/verify rather than holding raw key material in localStorage or IndexedDB.",
+  "author": "HeyElastos",
+  "role": "provider",
+  "type": "microvm",
+  "entrypoint": "rootfs.ext4",
+  "provides": "elastos://identity/*",
+  "capabilities": ["localhost://ElastOS/SystemServices/Identity/*"],
+  "resources": {
+    "memory_mb": 64,
+    "gpu": false
+  }
+}

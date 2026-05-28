@@ -1,0 +1,25 @@
+[package]
+name = "identity-projection-provider"
+description = "Projects the runtime principal as a signing did:key. Replaces per-capsule keystores so private keys never leave the provider sandbox."
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+authors = ["HeyElastos"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "fs", "sync"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+hex = "0.4"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["std"] }
+sha2 = "0.10"
+parking_lot = "0.12"
+
+[[bin]]
+name = "identity-projection-provider"
+path = "src/main.rs"
