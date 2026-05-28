@@ -23,10 +23,12 @@ parking_lot = "0.12"
 # is iroh-gossip — a thin wrapper around HyParView + Plumtree on top
 # of the iroh QUIC endpoint.
 iroh = "1.0.0-rc.1"
-iroh-gossip = "0.103"
+iroh-gossip = "0.100"
 n0-future = "0.2"
 futures-lite = "2"
 futures-util = "0.3"
+rand = "0.8"
+bytes = "1"
 
 [[bin]]
 name = "peer-provider"

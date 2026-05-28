@@ -10,12 +10,14 @@ resolver = "2"
 members = [
     "capsules/blobs-provider",
     "capsules/docs-provider",
+    "capsules/peer-provider",
     "capsules/webrtc-signal-provider",
     "capsules/hey-social",
 ]
 default-members = [
     "capsules/blobs-provider",
     "capsules/docs-provider",
+    "capsules/peer-provider",
     "capsules/webrtc-signal-provider",
 ]
 

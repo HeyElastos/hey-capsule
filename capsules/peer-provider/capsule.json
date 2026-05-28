@@ -1,0 +1,16 @@
+{
+  "schema": "elastos.capsule/v1",
+  "name": "peer-provider",
+  "version": "0.0.1",
+  "description": "iroh-gossip P2P pub/sub. Backs Hey chat (per-pair queue topics) and public feeds. Topology-agnostic: routes opaque bytes by opaque topic ids.",
+  "author": "HeyElastos",
+  "role": "provider",
+  "type": "microvm",
+  "entrypoint": "rootfs.ext4",
+  "provides": "elastos://peer/*",
+  "capabilities": ["localhost://ElastOS/SystemServices/Peer/*"],
+  "resources": {
+    "memory_mb": 192,
+    "gpu": false
+  }
+}
