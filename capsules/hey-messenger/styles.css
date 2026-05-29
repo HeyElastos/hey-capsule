@@ -1,0 +1,802 @@
+/* Hey Chat — hand-written Telegram-desktop stylesheet.
+ *
+ * No Tailwind. Semantic .msgr-* classes only. Every color is scoped under
+ * `html.dark` and `html.light` (toggled by the theme bootstrap in
+ * index.html), so the whole UI works in both modes. A single blue accent
+ * carries primary actions / mine-bubbles / unread badges.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  height: 100%;
+}
+
+/* ── Theme tokens ────────────────────────────────────────────────────── */
+html.dark {
+  --msgr-bg: #0e1621;
+  --msgr-panel: #17212b;
+  --msgr-panel-2: #1c2733;
+  --msgr-hover: #202b36;
+  --msgr-active: #2b5278;
+  --msgr-border: #0a0f15;
+  --msgr-divider: #101921;
+  --msgr-text: #e9edf0;
+  --msgr-text-muted: #8a97a3;
+  --msgr-accent: #5288c1;
+  --msgr-accent-hover: #6398d1;
+  --msgr-accent-text: #ffffff;
+  --msgr-bubble-in: #182533;
+  --msgr-bubble-in-text: #e9edf0;
+  --msgr-bubble-out: #2b5278;
+  --msgr-bubble-out-text: #ffffff;
+  --msgr-badge-bg: #5288c1;
+  --msgr-badge-text: #ffffff;
+  --msgr-input-bg: #242f3d;
+  --msgr-shadow: rgba(0, 0, 0, 0.45);
+  --msgr-conv-bg: #0e1621;
+  --msgr-error: #f08a8a;
+}
+
+html.light {
+  --msgr-bg: #ffffff;
+  --msgr-panel: #ffffff;
+  --msgr-panel-2: #f4f4f5;
+  --msgr-hover: #f1f3f5;
+  --msgr-active: #e7f0fa;
+  --msgr-border: #e4e7eb;
+  --msgr-divider: #eceef0;
+  --msgr-text: #14181c;
+  --msgr-text-muted: #707a83;
+  --msgr-accent: #3390ec;
+  --msgr-accent-hover: #2a82da;
+  --msgr-accent-text: #ffffff;
+  --msgr-bubble-in: #ffffff;
+  --msgr-bubble-in-text: #14181c;
+  --msgr-bubble-out: #eeffde;
+  --msgr-bubble-out-text: #14181c;
+  --msgr-badge-bg: #3390ec;
+  --msgr-badge-text: #ffffff;
+  --msgr-input-bg: #ffffff;
+  --msgr-shadow: rgba(16, 35, 47, 0.12);
+  --msgr-conv-bg: #cfdce8;
+  --msgr-error: #d64545;
+}
+
+/* ── Sign-in gate ────────────────────────────────────────────────────── */
+.msgr-signin {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--msgr-bg);
+  color: var(--msgr-text);
+}
+
+.msgr-signin-card {
+  width: 100%;
+  max-width: 380px;
+  padding: 36px 28px;
+  border-radius: 18px;
+  background: var(--msgr-panel);
+  box-shadow: 0 20px 60px var(--msgr-shadow);
+  text-align: center;
+}
+
+html.light .msgr-signin-card {
+  border: 1px solid var(--msgr-border);
+}
+
+.msgr-signin-logo {
+  font-size: 44px;
+  line-height: 1;
+  margin-bottom: 12px;
+}
+
+.msgr-signin-title {
+  margin: 0 0 8px;
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.msgr-signin-sub {
+  margin: 0 0 24px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--msgr-text-muted);
+}
+
+.msgr-signin-btn {
+  width: 100%;
+}
+
+.msgr-signin-warn {
+  padding: 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--msgr-text-muted);
+  background: var(--msgr-panel-2);
+}
+
+.msgr-recovery {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Buttons / inputs ────────────────────────────────────────────────── */
+.msgr-btn-primary {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--msgr-accent);
+  color: var(--msgr-accent-text);
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.msgr-btn-primary:hover:not(:disabled) {
+  background: var(--msgr-accent-hover);
+}
+
+.msgr-btn-primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.msgr-btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.msgr-btn-secondary {
+  appearance: none;
+  cursor: pointer;
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--msgr-panel-2);
+  color: var(--msgr-text);
+  border: 1px solid var(--msgr-border);
+  transition: background 0.15s ease;
+}
+
+.msgr-btn-secondary:hover:not(:disabled) {
+  background: var(--msgr-hover);
+}
+
+.msgr-btn-secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.msgr-link-btn {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--msgr-accent);
+  text-decoration: none;
+}
+
+.msgr-link-btn:hover {
+  text-decoration: underline;
+}
+
+.msgr-input {
+  width: 100%;
+  padding: 11px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  background: var(--msgr-input-bg);
+  color: var(--msgr-text);
+  border: 1px solid var(--msgr-border);
+  outline: none;
+}
+
+.msgr-input:focus {
+  border-color: var(--msgr-accent);
+}
+
+.msgr-error {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--msgr-error);
+}
+
+.msgr-icon {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+/* ── Shell: 2-pane layout ────────────────────────────────────────────── */
+.msgr-shell {
+  display: flex;
+  height: 100%;
+  background: var(--msgr-bg);
+  color: var(--msgr-text);
+  overflow: hidden;
+}
+
+.msgr-sidebar {
+  width: 320px;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--msgr-panel);
+  border-right: 1px solid var(--msgr-divider);
+}
+
+.msgr-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--msgr-conv-bg);
+}
+
+/* ── Chat list ───────────────────────────────────────────────────────── */
+.msgr-list {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.msgr-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: 56px;
+  flex: none;
+  border-bottom: 1px solid var(--msgr-divider);
+}
+
+.msgr-list-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.msgr-add-btn {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--msgr-text-muted);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.msgr-add-btn:hover {
+  background: var(--msgr-hover);
+  color: var(--msgr-accent);
+}
+
+.msgr-list-rows {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.msgr-list-empty {
+  padding: 48px 24px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--msgr-text-muted);
+}
+
+.msgr-row {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.msgr-row:hover {
+  background: var(--msgr-hover);
+}
+
+.msgr-row-active,
+.msgr-row-active:hover {
+  background: var(--msgr-active);
+}
+
+html.dark .msgr-row-active .msgr-row-name,
+html.dark .msgr-row-active .msgr-row-preview,
+html.dark .msgr-row-active .msgr-row-time {
+  color: #ffffff;
+}
+
+.msgr-row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.msgr-row-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.msgr-row-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--msgr-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msgr-row-time {
+  font-size: 12px;
+  color: var(--msgr-text-muted);
+  flex: none;
+}
+
+.msgr-row-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.msgr-row-preview {
+  font-size: 13px;
+  color: var(--msgr-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msgr-badge {
+  flex: none;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--msgr-badge-bg);
+  color: var(--msgr-badge-text);
+}
+
+/* ── Avatar ──────────────────────────────────────────────────────────── */
+.msgr-avatar {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: #ffffff;
+  background: linear-gradient(135deg, #5288c1, #4978ac);
+}
+
+html.light .msgr-avatar {
+  background: linear-gradient(135deg, #3390ec, #2a7bd0);
+}
+
+/* ── Empty state ─────────────────────────────────────────────────────── */
+.msgr-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  color: var(--msgr-text-muted);
+}
+
+.msgr-empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+  opacity: 0.7;
+}
+
+.msgr-empty-title {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--msgr-text);
+}
+
+.msgr-empty-sub {
+  margin: 0;
+  font-size: 14px;
+  max-width: 320px;
+}
+
+/* ── Conversation ────────────────────────────────────────────────────── */
+.msgr-conv {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+
+.msgr-conv-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  flex: none;
+  padding: 0 18px;
+  background: var(--msgr-panel);
+  border-bottom: 1px solid var(--msgr-divider);
+}
+
+.msgr-conv-header .msgr-avatar {
+  width: 38px;
+  height: 38px;
+  font-size: 14px;
+}
+
+.msgr-conv-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.msgr-conv-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--msgr-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msgr-conv-status {
+  font-size: 12px;
+  color: var(--msgr-text-muted);
+}
+
+.msgr-conv-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 18px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.msgr-conv-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--msgr-text-muted);
+}
+
+/* ── Message bubbles ─────────────────────────────────────────────────── */
+.msgr-bubble-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.msgr-bubble-row-mine {
+  justify-content: flex-end;
+}
+
+.msgr-bubble {
+  max-width: 72%;
+  padding: 7px 11px 5px;
+  border-radius: 14px;
+  border-bottom-left-radius: 4px;
+  background: var(--msgr-bubble-in);
+  color: var(--msgr-bubble-in-text);
+  box-shadow: 0 1px 1px var(--msgr-shadow);
+}
+
+.msgr-bubble-mine {
+  border-radius: 14px;
+  border-bottom-right-radius: 4px;
+  border-bottom-left-radius: 14px;
+  background: var(--msgr-bubble-out);
+  color: var(--msgr-bubble-out-text);
+}
+
+.msgr-bubble-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msgr-bubble-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  text-align: right;
+  opacity: 0.7;
+}
+
+.msgr-bubble-lock {
+  font-size: 10px;
+}
+
+/* ── Composer ────────────────────────────────────────────────────────── */
+.msgr-composer {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--msgr-panel);
+  border-top: 1px solid var(--msgr-divider);
+}
+
+.msgr-composer-input {
+  flex: 1;
+  resize: none;
+  max-height: 140px;
+  min-height: 24px;
+  padding: 11px 14px;
+  border-radius: 14px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  background: var(--msgr-input-bg);
+  color: var(--msgr-text);
+  border: 1px solid var(--msgr-border);
+  outline: none;
+}
+
+.msgr-composer-input:focus {
+  border-color: var(--msgr-accent);
+}
+
+.msgr-composer-input::placeholder {
+  color: var(--msgr-text-muted);
+}
+
+.msgr-send-btn {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--msgr-accent);
+  color: var(--msgr-accent-text);
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.msgr-send-btn:hover:not(:disabled) {
+  background: var(--msgr-accent-hover);
+}
+
+.msgr-send-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.msgr-send-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Add-contact modal ───────────────────────────────────────────────── */
+.msgr-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: msgr-fade-in 0.15s ease;
+}
+
+.msgr-modal {
+  width: 100%;
+  max-width: 420px;
+  border-radius: 16px;
+  padding: 20px;
+  background: var(--msgr-panel);
+  color: var(--msgr-text);
+  box-shadow: 0 24px 70px var(--msgr-shadow);
+  animation: msgr-fade-up 0.18s ease;
+}
+
+html.light .msgr-modal {
+  border: 1px solid var(--msgr-border);
+}
+
+.msgr-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.msgr-modal-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.msgr-modal-close {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--msgr-text-muted);
+  transition: background 0.15s ease;
+}
+
+.msgr-modal-close:hover {
+  background: var(--msgr-hover);
+}
+
+.msgr-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--msgr-panel-2);
+  margin-bottom: 16px;
+}
+
+.msgr-tab {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  flex: 1;
+  padding: 9px 12px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  background: transparent;
+  color: var(--msgr-text-muted);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.msgr-tab:hover {
+  color: var(--msgr-text);
+}
+
+.msgr-tab-active,
+.msgr-tab-active:hover {
+  background: var(--msgr-panel);
+  color: var(--msgr-accent);
+  box-shadow: 0 1px 3px var(--msgr-shadow);
+}
+
+html.dark .msgr-tab-active {
+  background: var(--msgr-hover);
+}
+
+.msgr-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.msgr-modal-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--msgr-text-muted);
+}
+
+.msgr-invite-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.msgr-invite-text {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  padding: 11px 13px;
+  border-radius: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-all;
+  background: var(--msgr-input-bg);
+  color: var(--msgr-text);
+  border: 1px solid var(--msgr-border);
+  outline: none;
+}
+
+.msgr-invite-text:focus {
+  border-color: var(--msgr-accent);
+}
+
+.msgr-modal-error {
+  margin-top: 12px;
+}
+
+/* ── Animations ──────────────────────────────────────────────────────── */
+@keyframes msgr-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes msgr-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ── Responsive: collapse to a single pane on narrow screens ─────────── */
+@media (max-width: 640px) {
+  .msgr-sidebar {
+    width: 100%;
+    min-width: 0;
+  }
+}

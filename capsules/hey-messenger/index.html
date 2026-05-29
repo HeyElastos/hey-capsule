@@ -7,6 +7,13 @@
     <link rel="icon" type="image/svg+xml" href="hey-icon.svg" />
     <title>Hey Chat</title>
     <link data-trunk rel="rust" data-wasm-opt="z" />
+    <!-- Hand-written Telegram-desktop stylesheet (no Tailwind toolchain).
+         The copy-file directive stages it into dist/ on build; the plain
+         stylesheet link wires it into the document at runtime. Every color
+         is scoped under html.dark / html.light (toggled by the theme script
+         below). -->
+    <link data-trunk rel="copy-file" href="styles.css" />
+    <link rel="stylesheet" href="styles.css" />
     <!-- Telegram-desktop Tailwind (zinc/amber) stylesheet is generated in a
          later step; the screens land on top of this scaffold. The passkey
          shim + theme bootstrap below are needed for sign-in and are reused
