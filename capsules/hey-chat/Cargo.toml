@@ -1,0 +1,42 @@
+[package]
+name = "hey-chat"
+description = "Shared chat engine for the Hey capsule pack — PQ-E2E crypto, did:key identity, signed events, Carrier transport, and the sealed-sender DM workflow. Consumed by hey-social and hey-messenger as a path rlib so the security-critical core stays byte-identical across both apps."
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+authors = ["HeyElastos"]
+
+# Plain rlib (default crate-type) — NOT cdylib. The wasm bin crates
+# (hey-social, hey-messenger) pull this in via `hey-chat = { path = "../hey-chat" }`
+# and Trunk compiles the final wasm. This crate is wasm32-only (it pulls
+# getrandom('js') + web-sys); it is deliberately excluded from the
+# workspace `default-members` so a host-target `cargo build` at the root
+# does not try to build it.
+
+[dependencies]
+# ── Pure security core (Phase 1) ──────────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ed25519-compact = { version = "2", default-features = false }
+base64 = "0.22"
+sha2 = "0.10"
+# Post-quantum E2E for DMs — hybrid ML-KEM-768 + X25519 + ChaCha20Poly1305.
+# Versions/features MUST match hey-social's Cargo.toml exactly so the
+# envelope stays byte-identical (HKDF_INFO = "hey-messenger/hpq-1").
+ml-kem = "0.2"
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "rand_core"] }
+hkdf = "0.12"
+rand_core = { version = "0.6", features = ["std"] }
+# getrandom 'js' backs OsRng on wasm32 — required for key generation.
+getrandom = { version = "0.2", features = ["js"] }
+# events.rs logs via console + stamps ts with Date::now on wasm.
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+
+# NOTE: the transport boundary (runtime/peer/storage/capability), session,
+# outbox, passkey, dms, peer_receiver, profile shim, and the blobs wrapper
+# land in later phases — they need gloo-net/gloo-storage/web-sys/leptos and
+# the CapsuleCtx parameterization (CAPSULE_ID / namespace / session-key
+# injected by the consuming bin crate, not baked to hey-social's values).
