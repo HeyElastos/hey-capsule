@@ -33,10 +33,23 @@ getrandom = { version = "0.2", features = ["js"] }
 # events.rs logs via console + stamps ts with Date::now on wasm.
 wasm-bindgen = "0.2"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["console"] }
-
-# NOTE: the transport boundary (runtime/peer/storage/capability), session,
-# outbox, passkey, dms, peer_receiver, profile shim, and the blobs wrapper
-# land in later phases — they need gloo-net/gloo-storage/web-sys/leptos and
-# the CapsuleCtx parameterization (CAPSULE_ID / namespace / session-key
-# injected by the consuming bin crate, not baked to hey-social's values).
+# runtime.rs/session.rs use localStorage + sessionStorage via gloo-storage,
+# await JS promises via wasm-bindgen-futures, and convert fetch JSON via
+# serde-wasm-bindgen. Versions/features match hey-social's Cargo.toml.
+gloo-storage = "0.3"
+wasm-bindgen-futures = "0.4"
+serde-wasm-bindgen = "0.6"
+web-sys = { version = "0.3", features = [
+  # runtime.rs HTTP transport boundary + session.rs sessionStorage wipe.
+  "Window",
+  "Location",
+  "History",
+  "UrlSearchParams",
+  "Request",
+  "RequestInit",
+  "RequestCredentials",
+  "Response",
+  "Headers",
+  "Storage",
+  "console",
+] }
