@@ -244,3 +244,72 @@ treat it as known XSS surface, not architecturally correct.
 | Identity inheritance from /api/session | Won't work, by design — and that's OK |
 | Ed25519 in localStorage | Tolerated as transitional; not a long-term answer |
 | In-capsule workaround for 401→403 | Confirmed impossible — runtime is the gate |
+
+## YNH-fork patch lifecycle (designed for removal)
+
+The YNH fork at
+[HeyElastos/elastos-runtime_ynh](https://github.com/HeyElastos/elastos-runtime_ynh)
+carries patches in `scripts/patches/`. Each is **scaffolding** —
+it bridges a gap between stock upstream and what Hey needs, and is
+meant to disappear when upstream merges the equivalent fix. Two
+distinct fix shapes can close the gap; both result in the same
+removal procedure.
+
+### Removal cases
+
+**Case A — upstream merges the proper fix (capability-token validation).**
+The hardcoded allowlist disappears from upstream entirely; the
+provider proxy now validates `X-Capability-Token` instead. Our
+patch tries to modify a `match` block that no longer exists →
+`scripts/_common.sh` halts the next install with a patch-apply
+error. Loud signal. Delete the patch file, bump
+`UPSTREAM_VERSION` to the release that includes the fix, re-test,
+ship.
+
+**Case B — upstream merges the short fix (just adds Hey to the
+hardcoded list).** Our patch becomes a duplicate of what's in
+upstream. Same removal procedure: delete the patch file, bump
+`UPSTREAM_VERSION`, re-test, ship.
+
+Either way the capsule code requires no changes — it's already
+spec-compliant for both worlds.
+
+### Discipline that keeps patches from outliving their purpose
+
+1. **Every patch file MUST carry a kill condition in its header.**
+   Format:
+   ```
+   # Target: <upstream file path>
+   # Generated against: Elacity/elastos-runtime @ <commit>
+   # Kill condition: DELETE this file when <upstream PR # | release
+   #   tag> merges/ships.
+   # Why: <one paragraph linking the gate this opens to the capsule
+   #   behavior it unblocks>
+   ```
+   No header → reject on review.
+
+2. **File the upstream PR before or alongside landing any new
+   patch.** Reference the PR number in the patch header. Without a
+   visible cross-link, the patch outlives its purpose.
+
+3. **`scripts/_common.sh` halts the install on patch-apply
+   failure.** That's a feature: when upstream changes the file we
+   patched, install fails loudly → we delete or regenerate. Loud
+   beats silent drift.
+
+4. **On every `UPSTREAM_VERSION` bump:** re-test every patch.
+   Either it still applies (keep it), the upstream PR landed
+   (delete it), or upstream diverged (regenerate against new
+   upstream and refresh the header).
+
+### Currently in flight (as of 2026-05-29)
+
+- **`0001-allow-hey-redemption.patch`** — opens `/runtime-token`
+  for hey-social + hey-messenger. Already landed.
+- **`0002-allow-hey-provider-access.patch`** *(planned)* — would
+  extend the provider-proxy allowlist so capability requests and
+  provider calls actually flow.
+- **Upstream PR** *(target)* — capability-token-based provider
+  proxy validation in `Elacity/elastos-runtime`. When this lands,
+  both patches above get deleted and `UPSTREAM_VERSION` bumps to
+  the release that includes the proper fix.

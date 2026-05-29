@@ -120,6 +120,45 @@ aren't. Each links to where the truth is documented.
   client-side trick. The runtime is the gatekeeper. Anyone proposing
   an in-capsule workaround for a 401→403 pattern is wrong.
 
+### YNH-fork patches are designed to be removed
+
+- **Every `.patch` file in
+  [HeyElastos/elastos-runtime_ynh](https://github.com/HeyElastos/elastos-runtime_ynh)'s
+  `scripts/patches/` is temporary scaffolding.** Each one bridges a
+  gap between what stock upstream supports and what Hey needs;
+  each one is meant to disappear when upstream merges the
+  equivalent (or better) fix.
+- **Every patch file MUST carry a kill condition in its header.**
+  Format:
+  ```
+  # Target: <upstream file path>
+  # Generated against: Elacity/elastos-runtime @ <commit>
+  # Kill condition: DELETE this file when <upstream PR # | release tag>
+  #   merges/ships.
+  # Why: <one paragraph linking the runtime gate this opens to the
+  #   capsule behavior it unblocks>
+  ```
+  A patch without this header is a bug — reject it on review.
+- **File the upstream PR before or alongside landing any new patch.**
+  Reference the PR number in the patch header. Without a paper trail
+  that says "this is temporary", the patch will outlive its purpose.
+- **`scripts/_common.sh` halts the install if any patch fails to
+  apply.** That's a feature: when upstream changes the file we
+  patched (because the proper fix merged), the install fails loudly
+  → we delete the now-obsolete patch and bump `UPSTREAM_VERSION`.
+  Loud failure beats silent drift.
+- **On every `UPSTREAM_VERSION` bump:** re-test every patch. Either
+  it still applies (keep it), the upstream PR landed (delete it), or
+  the source diverged (regenerate against the new upstream and
+  refresh the header). Never let a patch coast across multiple
+  upstream bumps without re-validation.
+- **Currently in flight (2026-05-29):**
+  `0001-allow-hey-redemption.patch` opens `/runtime-token` for
+  hey-social + hey-messenger. A planned `0002-allow-hey-provider-access.patch`
+  would extend the provider-proxy allowlist. The proper upstream
+  fix is capability-token-based proxy validation; once it lands,
+  both patches go away.
+
 ### Manifests
 
 - **`capsule.json` is `#[serde(deny_unknown_fields)]`** — any typo or
