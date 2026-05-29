@@ -200,6 +200,53 @@ fn my_public_pubkeys() -> Option<PeerKeys> {
     })
 }
 
+/// Provider-aware pubkeys: a provider-backed session (empty local seed) gets
+/// them from the identity provider; otherwise from the local seed. So groups
+/// work no-tap, same as DMs.
+async fn my_pubkeys() -> Option<PeerKeys> {
+    let s = session::current()?;
+    if s.auth_key_hex.is_empty() {
+        let resp = crate::runtime::identity_provider::pubkeys(
+            crate::runtime::identity_provider::HEY_NAMESPACE,
+        )
+        .await
+        .ok()?;
+        let d = resp.get("data").unwrap_or(&resp);
+        Some(PeerKeys {
+            x25519_pub_b64: d.get("x25519_pub_b64")?.as_str()?.to_string(),
+            ml_kem_pub_b64: d.get("ml_kem_pub_b64")?.as_str()?.to_string(),
+        })
+    } else {
+        my_public_pubkeys()
+    }
+}
+
+/// Open a group envelope: a provider-backed session decrypts via the identity
+/// provider's x25519_dh + ml_kem_decapsulate (private keys never leave the
+/// provider) and finishes the symmetric half locally; otherwise local-key
+/// decrypt with the session seed.
+async fn open_group_envelope(env: &HpqEnvelope) -> Result<String, String> {
+    let provider_backed = session::current()
+        .map(|s| s.auth_key_hex.is_empty())
+        .unwrap_or(false);
+    if provider_backed {
+        let (eph, kem_ct) = crypto::envelope_recipient_inputs(env)?;
+        let ns = crate::runtime::identity_provider::HEY_NAMESPACE;
+        let x = crate::runtime::identity_provider::x25519_dh(ns, &eph)
+            .await
+            .map_err(|e| format!("provider x25519_dh: {e}"))?;
+        let k = crate::runtime::identity_provider::ml_kem_decapsulate(ns, &kem_ct)
+            .await
+            .map_err(|e| format!("provider ml_kem_decapsulate: {e}"))?;
+        let xs = crate::runtime::identity_provider::shared_from(&x).map_err(|e| e.to_string())?;
+        let ks = crate::runtime::identity_provider::shared_from(&k).map_err(|e| e.to_string())?;
+        crypto::open_with_secrets(env, &xs, &ks)
+    } else {
+        let keys = load_my_keys()?;
+        crypto::decrypt_hybrid(env, &keys)
+    }
+}
+
 // Build + sign + publish a group event to every member except self.
 // For each recipient: if we have their pubkeys cached we wrap the
 // text in a hybrid PQ envelope; otherwise we fall back to plaintext
@@ -207,7 +254,7 @@ fn my_public_pubkeys() -> Option<PeerKeys> {
 async fn send_group_event(group: &Group, text: &str, event_type: &str) -> Result<(), String> {
     let me = ensure_profile().await.map_err(|e| e.to_string())?;
     let s = session::current().ok_or_else(|| "not signed in".to_string())?;
-    let my_pub = my_public_pubkeys();
+    let my_pub = my_pubkeys().await;
 
     for member_did in &group.members {
         if member_did == &me.did_key {
@@ -394,8 +441,7 @@ pub async fn receive_event(
     let (text, encrypted) = if let Some(env_val) = payload.get("envelope") {
         let env: HpqEnvelope = serde_json::from_value(env_val.clone())
             .map_err(|e| format!("envelope shape: {e}"))?;
-        let my_keys = load_my_keys()?;
-        let pt = crypto::decrypt_hybrid(&env, &my_keys)?;
+        let pt = open_group_envelope(&env).await?;
         (pt, true)
     } else if let Some(t) = payload.get("text").and_then(|v| v.as_str()) {
         (t.to_string(), false)
