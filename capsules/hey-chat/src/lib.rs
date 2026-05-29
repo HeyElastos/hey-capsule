@@ -16,9 +16,11 @@
 //!     Those carry per-capsule identity, so they take it via an injected
 //!     `CapsuleCtx` rather than baking hey-social's values.
 
+pub mod api;
 pub mod crypto;
 pub mod ctx;
 pub mod events;
 pub mod identity;
+pub mod peer_receiver;
 pub mod runtime;
 pub mod session;

@@ -751,6 +751,53 @@ pub mod did_provider {
     }
 }
 
+// ── Blobs (iroh-blobs P2P file share) ────────────────────────────────
+//
+// Thin wrappers over the blobs-provider (capsules/blobs-provider). Used for
+// chat attachments: add_bytes uploads and returns { hash, ticket }; the
+// ticket is what travels in the DM envelope so the recipient can fetch the
+// bytes directly P2P. Wire (provider, snake_case op tag):
+//   add_bytes { data_base64 }   -> { hash, ticket }
+//   fetch     { ticket, dest }  -> { hash }
+//   share     { hash }          -> { ticket }   (provider-side: not yet impl)
+//   list      {}                -> { blobs: [{ hash }] }
+//   drop      { hash }          -> { ok }
+
+pub mod blobs {
+    use super::{provider_call, RuntimeError, B64};
+    use base64::Engine;
+    use serde_json::{json, Value};
+
+    pub async fn add_bytes(bytes: &[u8]) -> Result<Value, RuntimeError> {
+        provider_call("blobs", "add_bytes", json!({ "data_base64": B64.encode(bytes) })).await
+    }
+    pub async fn fetch(ticket: &str, dest: &str) -> Result<Value, RuntimeError> {
+        provider_call("blobs", "fetch", json!({ "ticket": ticket, "dest": dest })).await
+    }
+    pub async fn share(hash: &str) -> Result<Value, RuntimeError> {
+        provider_call("blobs", "share", json!({ "hash": hash })).await
+    }
+    pub async fn list() -> Result<Value, RuntimeError> {
+        provider_call("blobs", "list", json!({})).await
+    }
+    pub async fn drop(hash: &str) -> Result<Value, RuntimeError> {
+        provider_call("blobs", "drop", json!({ "hash": hash })).await
+    }
+
+    /// Pull `{ hash, ticket }` out of an add_bytes/add_path response.
+    pub fn extract_ref(resp: &Value) -> Option<(String, String)> {
+        let hash = resp
+            .get("hash")
+            .or_else(|| resp.get("data").and_then(|d| d.get("hash")))
+            .and_then(|h| h.as_str())?;
+        let ticket = resp
+            .get("ticket")
+            .or_else(|| resp.get("data").and_then(|d| d.get("ticket")))
+            .and_then(|t| t.as_str())?;
+        Some((hash.to_string(), ticket.to_string()))
+    }
+}
+
 // ── Storage ───────────────────────────────────────────────────────────
 //
 // Two route shapes, same disk layout. Detected on first call and memoized.
