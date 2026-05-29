@@ -450,10 +450,28 @@ pub async fn provider_call(
 ) -> Result<Value, RuntimeError> {
     let resource = scheme_to_resource(scheme);
     let cap = ensure_capability_token(&resource, "write").await;
-    let headers = json!({
+    let mut headers = json!({
         "Content-Type": "application/json",
         "X-Capability-Token": cap,
     });
+    // PATCH 0004 (transitional, removable) — capsule-side companion to the
+    // fork's gateway-allowlist patch 0003. The gateway provider proxy
+    // (gateway_provider_proxy.rs) authorizes /api/provider/* SOLELY on the
+    // `x-elastos-home-token` header — the app-bound v2 launch envelope Home
+    // minted — NOT on X-Capability-Token and NOT on the session cookie. So
+    // without this header every provider call 403s "missing home launch
+    // token", even once patch 0003 adds hey-social to the proxy allowlist.
+    // Mirror the patch-0002 storage branch (build_storage_url), which already
+    // attaches the cached launch token for the same reason.
+    //
+    // KILL CONDITION: drop this the moment the gateway proxy validates the
+    // capability token (X-Capability-Token, sent above) per the dev's
+    // capability-based model — "more providers, not more permissions" — so
+    // provider auth rides the same credential as every other capability
+    // check and the home-token header is redundant. Tracks fork patch 0003.
+    if let Some(launch) = home_launch_token() {
+        headers["x-elastos-home-token"] = Value::String(launch);
+    }
     let url = format!(
         "{}/api/provider/{}/{}",
         api_base(),
