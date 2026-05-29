@@ -807,20 +807,33 @@ pub mod blobs {
 // provider is installed/registered; patch 0003's gateway arm already authorizes
 // it for hey-social/hey-messenger.
 //
-// ADDITIVE for now: nothing calls these yet. events.rs keeps signing with the
-// local PRF-derived key until the provider is verified dispatching on a real
-// box — flipping signing over before then would break a working app. Wire
-// matches the provider's protocol (STATUS.md): whoami/sign/verify.
+// The capsule asks the runtime to sign / ECDH / decapsulate so the user's
+// key never lives in the browser. Wire matches identity-projection-provider:
+// whoami / pubkeys / sign / x25519_dh / ml_kem_decapsulate / verify. These are
+// the canonical /api/provider/identity/* calls; a provider-backed session
+// (did_key but empty local seed) routes signing + DM decryption through here,
+// with a local-seed fallback when the provider is absent (vanilla upstream).
 
 pub mod identity_provider {
     use super::{provider_call, RuntimeError, B64};
     use base64::Engine;
     use serde_json::{json, Value};
 
+    /// Shared identity namespace for ALL Hey capsules, so one user has ONE
+    /// did:key everywhere (the per-principal key is sub-keyed by this). Keep
+    /// it constant across hey-social/hey-messenger — do NOT use the capsule id.
+    pub const HEY_NAMESPACE: &str = "hey";
+
     /// The runtime-projected signing identity for `namespace`.
-    /// Returns `{ did_key, public_key_hex, namespace }`.
+    /// Returns `{ did_key, public_key_hex }`.
     pub async fn whoami(namespace: &str) -> Result<Value, RuntimeError> {
         provider_call("identity", "whoami", json!({ "namespace": namespace })).await
+    }
+
+    /// Our advertised public keys: `{ x25519_pub_b64, ml_kem_pub_b64, did_key }`.
+    /// What we put in invites/handshakes so peers can seal to us.
+    pub async fn pubkeys(namespace: &str) -> Result<Value, RuntimeError> {
+        provider_call("identity", "pubkeys", json!({ "namespace": namespace })).await
     }
 
     /// Sign `payload` with the runtime-held key for `namespace`.
@@ -830,6 +843,28 @@ pub mod identity_provider {
             "identity",
             "sign",
             json!({ "namespace": namespace, "payload_b64": B64.encode(payload) }),
+        )
+        .await
+    }
+
+    /// ECDH our X25519 secret against an ephemeral pubkey (recipient half of
+    /// sealed-sender decrypt). Returns `{ shared_b64 }` (32 bytes).
+    pub async fn x25519_dh(namespace: &str, eph_pub: &[u8]) -> Result<Value, RuntimeError> {
+        provider_call(
+            "identity",
+            "x25519_dh",
+            json!({ "namespace": namespace, "eph_pub_b64": B64.encode(eph_pub) }),
+        )
+        .await
+    }
+
+    /// ML-KEM-768 decapsulation against our secret. `ct` is the envelope's KEM
+    /// ciphertext (1088 bytes). Returns `{ shared_b64 }` (32 bytes).
+    pub async fn ml_kem_decapsulate(namespace: &str, ct: &[u8]) -> Result<Value, RuntimeError> {
+        provider_call(
+            "identity",
+            "ml_kem_decapsulate",
+            json!({ "namespace": namespace, "ct_b64": B64.encode(ct) }),
         )
         .await
     }
@@ -850,6 +885,19 @@ pub mod identity_provider {
             }),
         )
         .await
+    }
+
+    /// Convenience: pull `shared_b64` out of an x25519_dh / ml_kem_decapsulate
+    /// response and decode it to 32 bytes.
+    pub fn shared_from(resp: &Value) -> Result<Vec<u8>, RuntimeError> {
+        let b64 = resp
+            .get("data")
+            .and_then(|d| d.get("shared_b64"))
+            .or_else(|| resp.get("shared_b64"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RuntimeError::new("identity provider: no shared_b64 in response"))?;
+        B64.decode(b64)
+            .map_err(|e| RuntimeError::new(format!("identity provider shared_b64: {e}")))
     }
 }
 
