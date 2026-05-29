@@ -19,6 +19,13 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["std"] }
 sha2 = "0.10"
 parking_lot = "0.12"
+# PQ-hybrid material so the provider speaks Hey's wire (must match
+# hey-chat/Cargo.toml exactly: ml-kem 0.2, x25519-dalek 2). The provider
+# CUSTODIES the per-principal X25519 + ML-KEM secrets and answers ECDH /
+# decapsulate requests so DMs/groups decrypt without the seed ever leaving.
+ml-kem = "0.2"
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
+rand_chacha = "0.3"
 
 [[bin]]
 name = "identity-projection-provider"

@@ -1,36 +1,40 @@
-//! identity-projection-provider — capsules ask "who am I" and "sign
-//! this" instead of holding the Ed25519 seed in localStorage.
+//! identity-projection-provider — the OS service that owns a Hey user's
+//! signing identity. Capsules ask "who am I", "sign this", "what are my
+//! pubkeys", "do this ECDH / KEM-decapsulate" instead of holding an
+//! Ed25519 seed (and X25519 + ML-KEM material) in localStorage.
 //!
-//! Today the seed is per-capsule (derived from the passkey PRF inside
-//! the WASM bundle, stashed in localStorage). That leaks: any XSS in
-//! the bundle reads the seed; logout doesn't actually clear it; the
-//! shape forces every capsule to redo passkey + PRF + did:key
-//! derivation. This provider does it once.
+//! IDENTITY MODEL (per-principal, runtime-custodial — the wallet model):
+//! the key is derived from the authenticated runtime PRINCIPAL the gateway
+//! injects (`principal_id`, e.g. `person:local:…`) plus a namespace. So the
+//! SAME user gets the SAME did:key across every Hey capsule, no passkey tap,
+//! and two different users on one box get different keys. (Pre-patch-0006,
+//! when the gateway doesn't inject principal_id yet, we fall back to a fixed
+//! principal so the provider still runs — degraded to per-install, not
+//! per-user.) The seed never leaves this process.
 //!
-//! Future direction: derive the projected key from a runtime-supplied
-//! principal handle (so two different capsules talking to the same
-//! provider get the same DID). For now we derive from a per-install
-//! random secret + a per-namespace tag, which gives us:
-//!   - same capsule on this device → same did:key across restarts
-//!   - different capsule asking for a different namespace → different
-//!     did:key (intentional; cross-capsule continuity is opt-in)
+//! Wire protocol mirrors did-/blobs-/wallet-provider: line-delimited JSON on
+//! stdin/stdout, registered by server_infra.rs via register_sub_provider
+//! (patches 0004/0005 — exactly how `wallet` is registered upstream).
 //!
-//! Wire protocol mirrors blobs-provider / peer-provider: line-delimited
-//! JSON on stdin/stdout. ProviderResponse-shaped responses.
+//! Operations (all key-bearing ops take an injected `principal_id`):
+//!   init                                              -> { protocol_version, provider, features }
+//!   whoami    { principal_id?, namespace? }           -> { did_key, public_key_hex }
+//!   pubkeys   { principal_id?, namespace? }           -> { x25519_pub_b64, ml_kem_pub_b64, did_key }
+//!   sign      { principal_id?, namespace?, payload_b64 } -> { signature_hex }
+//!   x25519_dh { principal_id?, namespace?, eph_pub_b64 } -> { shared_b64 }
+//!   ml_kem_decapsulate { principal_id?, namespace?, ct_b64 } -> { shared_b64 }
+//!   verify    { did_key, payload_b64, signature_hex } -> { valid }
+//!   shutdown                                          -> ok
 //!
-//! Operations:
-//!   init                                  -> { protocol_version,
-//!                                              provider, features }
-//!   whoami    { namespace? }              -> { did_key, public_key_hex }
-//!   sign      { namespace?, payload_b64 } -> { signature_hex }
-//!   verify    { did_key, payload_b64,
-//!               signature_hex }           -> { valid }
-//!   shutdown                              -> ok
+//! Crypto MUST match hey-chat/src/crypto.rs exactly (ml-kem 0.2, x25519-dalek
+//! 2, Ed25519): x25519 is derived from the Ed25519 seed (same 32 bytes), the
+//! ML-KEM keypair is generated deterministically from a per-principal seed so
+//! it is stable across restarts (peers cache the public key).
 //!
 //! Storage:
-//!   $XDG_DATA_HOME/elastos/identity-projection-provider/
-//!     master.key  — 32-byte random; HKDF'd per-namespace to derive
-//!                   each did:key. Never exported.
+//!   $XDG_DATA_HOME/elastos/identity-projection-provider/master.key
+//!     — 32-byte random root; per-(principal,namespace) seeds are HKDF/SHA-256
+//!       derived from it. Never exported. mode 0o600.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -40,13 +44,20 @@ use anyhow::{Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ml_kem::kem::Decapsulate;
+use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768};
 use parking_lot::Mutex;
-use rand_core::{OsRng, RngCore};
+use rand_chacha::ChaCha20Rng;
+use rand_core::{OsRng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use x25519_dalek::{PublicKey as XPub, StaticSecret as XSecret};
 
 const DEFAULT_NAMESPACE: &str = "default";
+/// Used when the gateway hasn't injected a principal yet (pre-patch-0006).
+/// Keeps the provider working — degraded to a single per-install identity.
+const FALLBACK_PRINCIPAL: &str = "local:default";
 const ED25519_PUB_MULTICODEC: [u8; 2] = [0xed, 0x01];
 
 // ── Wire ─────────────────────────────────────────────────────────────
@@ -57,12 +68,36 @@ enum Request {
     Init {},
     Whoami {
         #[serde(default)]
+        principal_id: Option<String>,
+        #[serde(default)]
+        namespace: Option<String>,
+    },
+    Pubkeys {
+        #[serde(default)]
+        principal_id: Option<String>,
+        #[serde(default)]
         namespace: Option<String>,
     },
     Sign {
         #[serde(default)]
+        principal_id: Option<String>,
+        #[serde(default)]
         namespace: Option<String>,
         payload_b64: String,
+    },
+    X25519Dh {
+        #[serde(default)]
+        principal_id: Option<String>,
+        #[serde(default)]
+        namespace: Option<String>,
+        eph_pub_b64: String,
+    },
+    MlKemDecapsulate {
+        #[serde(default)]
+        principal_id: Option<String>,
+        #[serde(default)]
+        namespace: Option<String>,
+        ct_b64: String,
     },
     Verify {
         did_key: String,
@@ -97,13 +132,54 @@ impl Response {
     }
 }
 
-// ── Node ─────────────────────────────────────────────────────────────
+// ── Per-principal key bundle ─────────────────────────────────────────
+
+/// All key material for one (principal, namespace). The Ed25519 seed roots
+/// both signing and the X25519 key (same 32 bytes, as hey-chat does); the
+/// ML-KEM keypair is derived deterministically from a separate per-principal
+/// seed. Held only in this process.
+struct KeyBundle {
+    ed: SigningKey,
+    x_secret: XSecret,
+    ml_dk_bytes: Vec<u8>, // ML-KEM-768 decapsulation (secret) key
+    ml_ek_bytes: Vec<u8>, // ML-KEM-768 encapsulation (public) key
+}
+
+impl KeyBundle {
+    fn did_key(&self) -> String {
+        public_key_to_did_key(self.ed.verifying_key().as_bytes())
+    }
+    fn x25519_pub(&self) -> [u8; 32] {
+        XPub::from(&self.x_secret).to_bytes()
+    }
+    /// ECDH against an ephemeral X25519 pubkey — the recipient half of
+    /// hey-chat's sealed-sender decrypt. Returns the 32-byte shared secret.
+    fn x25519_dh(&self, eph_pub: [u8; 32]) -> String {
+        let shared = self.x_secret.diffie_hellman(&XPub::from(eph_pub));
+        B64.encode(shared.as_bytes())
+    }
+    /// ML-KEM-768 decapsulation — the recipient half of the KEM. `ct_bytes`
+    /// is the 1088-byte ciphertext from the envelope; returns the shared key.
+    fn ml_kem_decapsulate(&self, ct_bytes: &[u8]) -> Result<String, String> {
+        let dk = <<MlKem768 as KemCore>::DecapsulationKey as EncodedSizeUser>::from_bytes(
+            self.ml_dk_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| "decapsulation key wrong size".to_string())?,
+        );
+        let ct = Ciphertext::<MlKem768>::try_from(ct_bytes)
+            .map_err(|_| format!("ML-KEM-768 ciphertext wrong size ({} bytes)", ct_bytes.len()))?;
+        let shared = dk
+            .decapsulate(&ct)
+            .map_err(|e| format!("decapsulate: {e:?}"))?;
+        let bytes: &[u8] = &shared;
+        Ok(B64.encode(bytes))
+    }
+}
 
 struct Node {
     master_secret: [u8; 32],
-    /// Cache of namespace → SigningKey so we don't re-derive on every
-    /// sign call. Cleared on shutdown.
-    cache: Arc<Mutex<HashMap<String, SigningKey>>>,
+    cache: Arc<Mutex<HashMap<String, Arc<KeyBundle>>>>,
 }
 
 impl Node {
@@ -116,45 +192,52 @@ impl Node {
         })
     }
 
-    /// HKDF-like per-namespace derivation. We use SHA-256 of
-    /// (master_secret || namespace_bytes) as the seed for the Ed25519
-    /// keypair. Two different namespaces yield independent keys; the
-    /// same namespace on the same device yields the same key forever.
-    fn signing_key(&self, namespace: &str) -> SigningKey {
-        if let Some(k) = self.cache.lock().get(namespace) {
-            return k.clone();
+    fn bundle(&self, principal: &str, namespace: &str) -> Arc<KeyBundle> {
+        let cache_key = format!("{principal}\u{1f}{namespace}");
+        if let Some(b) = self.cache.lock().get(&cache_key) {
+            return b.clone();
         }
-        let mut hasher = Sha256::new();
-        hasher.update(self.master_secret);
-        hasher.update(b"|");
-        hasher.update(namespace.as_bytes());
-        let seed: [u8; 32] = hasher.finalize().into();
-        let key = SigningKey::from_bytes(&seed);
-        self.cache
-            .lock()
-            .insert(namespace.to_string(), key.clone());
-        key
-    }
-
-    fn whoami(&self, namespace: &str) -> (String, String) {
-        let key = self.signing_key(namespace);
-        let pub_key = key.verifying_key();
-        (
-            public_key_to_did_key(pub_key.as_bytes()),
-            hex::encode(pub_key.as_bytes()),
-        )
-    }
-
-    fn sign(&self, namespace: &str, payload: &[u8]) -> String {
-        let key = self.signing_key(namespace);
-        let sig: Signature = key.sign(payload);
-        hex::encode(sig.to_bytes())
+        let bundle = Arc::new(derive_bundle(&self.master_secret, principal, namespace));
+        self.cache.lock().insert(cache_key, bundle.clone());
+        bundle
     }
 }
 
-/// `did:key:z<base58btc(multicodec_ed25519_pub_prefix || pubkey)>`.
-/// Matches the WC CCG spec + the capsule-side derivation in
-/// hey-social's identity.rs.
+/// Domain-separated SHA-256 over (master || tag || principal || namespace).
+fn derive_seed(master: &[u8; 32], tag: &[u8], principal: &str, namespace: &str) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(master);
+    h.update([0x1f]);
+    h.update(tag);
+    h.update([0x1f]);
+    h.update(principal.as_bytes());
+    h.update([0x1f]);
+    h.update(namespace.as_bytes());
+    h.finalize().into()
+}
+
+fn derive_bundle(master: &[u8; 32], principal: &str, namespace: &str) -> KeyBundle {
+    let ed_seed = derive_seed(master, b"ed25519", principal, namespace);
+    let ed = SigningKey::from_bytes(&ed_seed);
+    // X25519 from the SAME seed as Ed25519 — mirrors hey-chat::crypto::x25519_from_seed.
+    let x_secret = XSecret::from(ed_seed);
+
+    // ML-KEM-768 generated from a deterministic RNG seeded per-principal, so
+    // the public key is stable across restarts (peers cache it).
+    let ml_seed = derive_seed(master, b"ml-kem-768", principal, namespace);
+    let mut rng = ChaCha20Rng::from_seed(ml_seed);
+    let (dk, ek) = MlKem768::generate(&mut rng);
+
+    KeyBundle {
+        ed,
+        x_secret,
+        ml_dk_bytes: dk.as_bytes().to_vec(),
+        ml_ek_bytes: ek.as_bytes().to_vec(),
+    }
+}
+
+// ── did:key (W3C CCG, base58btc + ed25519-pub multicodec) ────────────
+
 fn public_key_to_did_key(public_key: &[u8; 32]) -> String {
     let mut prefixed = [0u8; 34];
     prefixed[..2].copy_from_slice(&ED25519_PUB_MULTICODEC);
@@ -265,8 +348,6 @@ async fn load_or_create_master(data_dir: &PathBuf) -> Result<[u8; 32]> {
     tokio::fs::write(&path, encoded.as_bytes())
         .await
         .context("write master")?;
-    // Lock down the file to user-readable. Best-effort — not all
-    // platforms support mode bits. Failures here are logged not fatal.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -291,6 +372,20 @@ fn data_dir() -> PathBuf {
 
 // ── Dispatch ─────────────────────────────────────────────────────────
 
+fn principal_of(p: &Option<String>) -> String {
+    match p {
+        Some(s) if !s.is_empty() => s.clone(),
+        _ => FALLBACK_PRINCIPAL.to_string(),
+    }
+}
+
+fn ns_of(n: &Option<String>) -> String {
+    match n {
+        Some(s) if !s.is_empty() => s.clone(),
+        _ => DEFAULT_NAMESPACE.to_string(),
+    }
+}
+
 async fn handle(node: &tokio::sync::Mutex<Option<Node>>, req: Request) -> Response {
     match req {
         Request::Init {} => {
@@ -298,50 +393,88 @@ async fn handle(node: &tokio::sync::Mutex<Option<Node>>, req: Request) -> Respon
             if guard.is_none() {
                 match Node::spawn(data_dir()).await {
                     Ok(n) => *guard = Some(n),
-                    Err(e) => {
-                        return Response::err_code("init_failed", format!("{e:#}"));
-                    }
+                    Err(e) => return Response::err_code("init_failed", format!("{e:#}")),
                 }
             }
             Response::ok(serde_json::json!({
-                "protocol_version": "0.1",
+                "protocol_version": "0.2",
                 "provider": "identity",
-                "features": ["whoami", "sign", "verify"],
+                "features": ["whoami", "pubkeys", "sign", "x25519_dh", "ml_kem_decapsulate", "verify"],
             }))
         }
-        Request::Whoami { namespace } => {
-            let guard = node.lock().await;
-            let Some(n) = guard.as_ref() else {
-                return Response::err_code("not_init", "init first");
-            };
-            let ns = namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE);
-            let (did_key, pub_hex) = n.whoami(ns);
+        Request::Whoami {
+            principal_id,
+            namespace,
+        } => with_node(node, |n| {
+            let b = n.bundle(&principal_of(&principal_id), &ns_of(&namespace));
             Response::ok(serde_json::json!({
-                "did_key": did_key,
-                "public_key_hex": pub_hex,
-                "namespace": ns,
+                "did_key": b.did_key(),
+                "public_key_hex": hex::encode(b.ed.verifying_key().as_bytes()),
             }))
-        }
+        })
+        .await,
+        Request::Pubkeys {
+            principal_id,
+            namespace,
+        } => with_node(node, |n| {
+            let b = n.bundle(&principal_of(&principal_id), &ns_of(&namespace));
+            Response::ok(serde_json::json!({
+                "x25519_pub_b64": B64.encode(b.x25519_pub()),
+                "ml_kem_pub_b64": B64.encode(&b.ml_ek_bytes),
+                "did_key": b.did_key(),
+            }))
+        })
+        .await,
         Request::Sign {
+            principal_id,
             namespace,
             payload_b64,
         } => {
-            let guard = node.lock().await;
-            let Some(n) = guard.as_ref() else {
-                return Response::err_code("not_init", "init first");
-            };
-            let ns = namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE);
             let payload = match B64.decode(&payload_b64) {
                 Ok(p) => p,
-                Err(e) => {
-                    return Response::err_code("bad_payload", format!("base64: {e}"));
-                }
+                Err(e) => return Response::err_code("bad_payload", format!("base64: {e}")),
             };
-            let sig = n.sign(ns, &payload);
-            Response::ok(serde_json::json!({
-                "signature_hex": sig,
-                "namespace": ns,
-            }))
+            with_node(node, |n| {
+                let b = n.bundle(&principal_of(&principal_id), &ns_of(&namespace));
+                let sig: Signature = b.ed.sign(&payload);
+                Response::ok(serde_json::json!({ "signature_hex": hex::encode(sig.to_bytes()) }))
+            })
+            .await
+        }
+        Request::X25519Dh {
+            principal_id,
+            namespace,
+            eph_pub_b64,
+        } => {
+            let eph: [u8; 32] = match B64.decode(&eph_pub_b64).ok().and_then(|v| v.try_into().ok()) {
+                Some(e) => e,
+                None => return Response::err_code("bad_eph", "eph_pub_b64 not 32 bytes base64"),
+            };
+            with_node(node, |n| {
+                let b = n.bundle(&principal_of(&principal_id), &ns_of(&namespace));
+                Response::ok(serde_json::json!({ "shared_b64": b.x25519_dh(eph) }))
+            })
+            .await
+        }
+        Request::MlKemDecapsulate {
+            principal_id,
+            namespace,
+            ct_b64,
+        } => {
+            let ct_bytes = match B64.decode(&ct_b64) {
+                Ok(c) => c,
+                Err(e) => return Response::err_code("bad_ct", format!("base64: {e}")),
+            };
+            with_node(node, |n| {
+                let b = n.bundle(&principal_of(&principal_id), &ns_of(&namespace));
+                match b.ml_kem_decapsulate(&ct_bytes) {
+                    Ok(shared_b64) => {
+                        Response::ok(serde_json::json!({ "shared_b64": shared_b64 }))
+                    }
+                    Err(e) => Response::err_code("decapsulate_failed", e),
+                }
+            })
+            .await
         }
         Request::Verify {
             did_key,
@@ -350,42 +483,99 @@ async fn handle(node: &tokio::sync::Mutex<Option<Node>>, req: Request) -> Respon
         } => {
             let payload = match B64.decode(&payload_b64) {
                 Ok(p) => p,
-                Err(e) => {
-                    return Response::err_code("bad_payload", format!("base64: {e}"));
-                }
+                Err(e) => return Response::err_code("bad_payload", format!("base64: {e}")),
             };
             let sig_bytes = match hex::decode(&signature_hex) {
                 Ok(b) => b,
-                Err(e) => {
-                    return Response::err_code("bad_sig", format!("hex: {e}"));
-                }
+                Err(e) => return Response::err_code("bad_sig", format!("hex: {e}")),
             };
             let sig = match Signature::from_slice(&sig_bytes) {
                 Ok(s) => s,
-                Err(e) => {
-                    return Response::err_code("bad_sig", format!("sig parse: {e}"));
-                }
+                Err(e) => return Response::err_code("bad_sig", format!("sig parse: {e}")),
             };
             let pk = match did_key_to_public_key(&did_key) {
                 Some(p) => p,
-                None => {
-                    return Response::err_code("bad_did_key", "not an Ed25519 did:key");
-                }
+                None => return Response::err_code("bad_did_key", "not an Ed25519 did:key"),
             };
             let vk = match VerifyingKey::from_bytes(&pk) {
                 Ok(v) => v,
-                Err(e) => {
-                    return Response::err_code("bad_did_key", format!("pubkey: {e}"));
-                }
+                Err(e) => return Response::err_code("bad_did_key", format!("pubkey: {e}")),
             };
-            let valid = vk.verify(&payload, &sig).is_ok();
-            Response::ok(serde_json::json!({ "valid": valid }))
+            Response::ok(serde_json::json!({ "valid": vk.verify(&payload, &sig).is_ok() }))
         }
         Request::Shutdown {} => {
             let mut guard = node.lock().await;
             *guard = None;
             Response::ok(serde_json::json!({ "message": "Provider shutting down" }))
         }
+    }
+}
+
+/// Run `f` against an initialized node, or return a not_init error.
+async fn with_node<F>(node: &tokio::sync::Mutex<Option<Node>>, f: F) -> Response
+where
+    F: FnOnce(&Node) -> Response,
+{
+    let guard = node.lock().await;
+    match guard.as_ref() {
+        Some(n) => f(n),
+        None => Response::err_code("not_init", "init first"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ml_kem::kem::Encapsulate;
+
+    fn master() -> [u8; 32] {
+        [7u8; 32]
+    }
+
+    #[test]
+    fn derivation_is_deterministic_and_per_principal() {
+        let m = master();
+        let a1 = derive_bundle(&m, "person:local:aaa", "hey");
+        let a2 = derive_bundle(&m, "person:local:aaa", "hey");
+        let b = derive_bundle(&m, "person:local:bbb", "hey");
+        // Same principal+namespace → identical identity across calls/restarts.
+        assert_eq!(a1.did_key(), a2.did_key());
+        assert_eq!(a1.x25519_pub(), a2.x25519_pub());
+        assert_eq!(a1.ml_ek_bytes, a2.ml_ek_bytes);
+        // Different principal → different identity (no cross-user collision).
+        assert_ne!(a1.did_key(), b.did_key());
+        assert_ne!(a1.x25519_pub(), b.x25519_pub());
+        assert_ne!(a1.ml_ek_bytes, b.ml_ek_bytes);
+        assert!(a1.did_key().starts_with("did:key:z"));
+    }
+
+    #[test]
+    fn ml_kem_encapsulate_then_provider_decapsulate_agree() {
+        let b = derive_bundle(&master(), "person:local:aaa", "hey");
+        // Sender side (peer): encapsulate to our advertised ML-KEM pubkey.
+        let ek = <<MlKem768 as KemCore>::EncapsulationKey as EncodedSizeUser>::from_bytes(
+            b.ml_ek_bytes.as_slice().try_into().unwrap(),
+        );
+        let (ct, shared_enc) = ek.encapsulate(&mut OsRng).unwrap();
+        let ct_bytes: &[u8] = &ct;
+        // Recipient side (provider): decapsulate must recover the same secret.
+        let shared_dec_b64 = b.ml_kem_decapsulate(ct_bytes).unwrap();
+        let shared_enc_bytes: &[u8] = &shared_enc;
+        assert_eq!(B64.encode(shared_enc_bytes), shared_dec_b64);
+    }
+
+    #[test]
+    fn x25519_dh_is_symmetric() {
+        let b = derive_bundle(&master(), "person:local:aaa", "hey");
+        let mut sb = [0u8; 32];
+        OsRng.fill_bytes(&mut sb);
+        let eph_secret = XSecret::from(sb);
+        let eph_pub = XPub::from(&eph_secret).to_bytes();
+        // Provider computes our_secret · eph_pub.
+        let provider_shared = b.x25519_dh(eph_pub);
+        // Peer computes eph_secret · our_pub → must match.
+        let peer_shared = eph_secret.diffie_hellman(&XPub::from(b.x25519_pub()));
+        assert_eq!(B64.encode(peer_shared.as_bytes()), provider_shared);
     }
 }
 
