@@ -20,6 +20,20 @@ pub fn Home() -> impl IntoView {
         return view! { <Landing /> }.into_any();
     }
 
+    // Boot splash → feed tunnel. On first paint the #hey-boot splash (the
+    // "Welcome to Hey" screen injected in index.html) is still covering the
+    // viewport. Let it read for a beat, then warp it out as this feed flies
+    // in — reusing the .warp-in already wrapping the feed below, so the
+    // splash and feed share one continuous warp. Idempotent: a later
+    // home-navigation finds the splash already dismissed and no-ops.
+    Effect::new(|_| {
+        spawn_local(async {
+            crate::runtime::boot_log("home: feed ready — warping splash into feed");
+            crate::runtime::sleep_ms(850).await;
+            crate::runtime::warp_boot_into_feed();
+        });
+    });
+
     let posts: RwSignal<Vec<Post>> = RwSignal::new(Vec::new());
     let loading = RwSignal::new(true);
     let error = RwSignal::new(String::new());

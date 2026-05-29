@@ -428,12 +428,28 @@ async fn my_pubkeys() -> Option<PeerKeys> {
 /// None if the provider is absent (caller falls back to the passkey ceremony,
 /// so removing the fork patch still leaves a working app).
 pub async fn adopt_provider_identity() -> Option<String> {
-    let resp = crate::runtime::identity_provider::whoami(IDENTITY_NS)
-        .await
-        .ok()?;
+    let resp = match crate::runtime::identity_provider::whoami(IDENTITY_NS).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Was previously `.ok()?` — a silent swallow that made an
+            // unreachable/old/absent provider indistinguishable from a clean
+            // "no identity" on the box. Log the real reason (403 = not
+            // authorized for the scheme, 404 = provider not registered,
+            // transport = runtime down) so the boot trace explains itself.
+            crate::runtime::boot_log(&format!("identity/whoami failed: {e}"));
+            return None;
+        }
+    };
     let d = resp.get("data").unwrap_or(&resp);
-    let did = d.get("did_key")?.as_str()?.to_string();
+    let did = match d.get("did_key").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => {
+            crate::runtime::boot_log("identity/whoami returned no did_key");
+            return None;
+        }
+    };
     if !did.starts_with("did:key:z") {
+        crate::runtime::boot_log("identity/whoami did_key is not a did:key:z");
         return None;
     }
     let name = session::current()

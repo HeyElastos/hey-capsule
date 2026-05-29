@@ -46,15 +46,27 @@ pub fn Landing() -> impl IntoView {
                 // legacy /api/session inherit. If neither yields an identity,
                 // the passkey CTA below handles sign-in — so this still works
                 // on vanilla upstream (no provider) by falling through.
+                crate::runtime::boot_log("landing: attempting no-tap adoption (identity/whoami)");
                 let mut ok = crate::api::dms::adopt_provider_identity().await.is_some();
-                if !ok {
+                if ok {
+                    crate::runtime::boot_log("landing: adopted provider identity — no tap");
+                } else {
+                    crate::runtime::boot_log("landing: no provider identity; trying legacy inherit");
                     if let Some(inherited) = crate::runtime::inherit_session().await {
                         session::set(&inherited);
                         ok = true;
+                        crate::runtime::boot_log("landing: inherited runtime session — no tap");
                     }
                 }
                 if ok {
+                    crate::runtime::boot_log("landing: signed in — navigating to feed");
+                    // The boot splash stays up across the navigate; Home warps
+                    // it out as the feed flies in (one continuous tunnel).
                     navigate("/home", NavigateOptions::default());
+                } else {
+                    crate::runtime::boot_log("landing: no no-tap identity — showing passkey sign-in");
+                    // Reveal the passkey CTA underneath with a calm fade.
+                    crate::runtime::hide_boot_splash();
                 }
             });
         }

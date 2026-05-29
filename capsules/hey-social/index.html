@@ -4,13 +4,66 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self';" />
-    <link rel="icon" type="image/svg+xml" href="hey-icon.svg" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='16'%20fill='%23d4b84b'/%3E%3Ctext%20x='32'%20y='47'%20font-family='Georgia,serif'%20font-style='italic'%20font-weight='700'%20font-size='42'%20text-anchor='middle'%20fill='%23091427'%3EH%3C/text%3E%3C/svg%3E" />
     <title>Hey</title>
     <link data-trunk rel="rust" data-wasm-opt="z" />
     <link data-trunk rel="copy-file" href="styles.css" />
     <link data-trunk rel="copy-file" href="welcome-animations.css" />
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="welcome-animations.css" />
+    <style>
+      /* Boot splash — a pure-HTML/CSS "Welcome to Hey" screen shown the
+         instant the document parses, BEFORE the (~15 MB) WASM finishes
+         loading and before the no-tap identity adoption resolves. It has
+         zero dependency on the WASM bundle, so even a mis-deployed build
+         shows a branded screen (and the timeout below self-diagnoses it)
+         instead of a black void. The Rust app dismisses it once it knows
+         where to land: .warp-transition (fly into the feed — same keyframe
+         the onboarding tunnel uses) or .hey-boot-hide (fade to the sign-in
+         CTA). pointer-events:none means it never blocks the feed even while
+         it sits at opacity 0 after the warp. Colors mirror the html.dark /
+         html.light --bg + --accent tokens from styles.css. */
+      #hey-boot {
+        position: fixed; inset: 0; z-index: 9999; pointer-events: none;
+        display: flex; align-items: center; justify-content: center; overflow: hidden;
+        background: radial-gradient(circle at top, #162747 0%, #091427 42%, #020916 100%);
+        color: #f8fafc;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      html.light #hey-boot {
+        background: radial-gradient(circle at top, #e8f5ff 0%, #f8fbff 60%, #ffffff 100%);
+        color: #0f172a;
+      }
+      .hey-boot-inner { position: relative; z-index: 1; text-align: center; padding: 0 1.5rem; }
+      .hey-boot-title {
+        font-family: "Dancing Script", "Caveat", cursive; font-weight: 700;
+        font-size: clamp(3rem, 9vw, 5.5rem); line-height: 1.05; margin: 0;
+        color: #d4b84b; text-shadow: 0 6px 30px rgba(212, 184, 75, 0.25);
+      }
+      html.light .hey-boot-title { color: #ca9a16; text-shadow: 0 6px 30px rgba(202, 154, 22, 0.18); }
+      .hey-boot-sub { margin-top: 0.55rem; font-size: 0.98rem; letter-spacing: 0.01em; color: #94a3b8; }
+      html.light .hey-boot-sub { color: #64748b; }
+      .hey-boot-spinner {
+        width: 30px; height: 30px; margin: 1.7rem auto 0; border-radius: 50%;
+        border: 3px solid rgba(148, 163, 184, 0.22); border-top-color: #d4b84b;
+        animation: hey-boot-spin 0.8s linear infinite;
+      }
+      html.light .hey-boot-spinner { border-top-color: #ca9a16; }
+      .hey-boot-glow {
+        position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.5;
+        animation: hey-boot-float 9s ease-in-out infinite;
+      }
+      .hey-boot-glow-a { top: 12%; left: 10%; width: 340px; height: 340px;
+        background: radial-gradient(circle closest-side, rgba(212, 184, 75, 0.6), transparent 72%); }
+      .hey-boot-glow-b { bottom: 10%; right: 8%; width: 440px; height: 440px;
+        background: radial-gradient(circle closest-side, rgba(96, 165, 250, 0.5), transparent 72%); animation-delay: -4s; }
+      #hey-boot.hey-boot-hide { opacity: 0; transition: opacity 0.5s ease; }
+      @keyframes hey-boot-spin { to { transform: rotate(360deg); } }
+      @keyframes hey-boot-float { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(0, -22px); } }
+      @media (prefers-reduced-motion: reduce) {
+        .hey-boot-spinner, .hey-boot-glow { animation: none; }
+      }
+    </style>
     <script>
       // Theme: respect prefers-color-scheme on first load, then persist
       // any user-toggled value. Matches the React capsule's behavior so
@@ -135,6 +188,34 @@
     </script>
   </head>
   <body>
+    <!-- Branded boot splash (see the #hey-boot block in <head>). The Rust
+         app fades or warps this away once it knows where to land. -->
+    <div id="hey-boot">
+      <div class="hey-boot-glow hey-boot-glow-a"></div>
+      <div class="hey-boot-glow hey-boot-glow-b"></div>
+      <div class="hey-boot-inner">
+        <h1 class="hey-boot-title">Welcome to Hey</h1>
+        <p class="hey-boot-sub" role="status" aria-live="polite">Signing you in to your own social media…</p>
+        <div class="hey-boot-spinner" aria-hidden="true"></div>
+      </div>
+    </div>
+    <script>
+      // Self-diagnosing fallback: if the splash is still undismissed after
+      // 12 s, the WASM almost certainly never booted (most often the deploy
+      // shipped the unbuilt template — dist/ wasn't flattened to the capsule
+      // root). Swap the subtitle to a concrete hint instead of a silent hang.
+      (function () {
+        setTimeout(function () {
+          var b = document.getElementById("hey-boot");
+          if (!b) return;
+          var c = b.getAttribute("class") || "";
+          if (c.indexOf("warp-transition") < 0 && c.indexOf("hey-boot-hide") < 0) {
+            var s = b.querySelector(".hey-boot-sub");
+            if (s) s.textContent = "Still loading… if this persists, the app build may not be deployed (flatten dist/ → capsule root).";
+          }
+        }, 12000);
+      })();
+    </script>
     <div id="root"></div>
   </body>
 </html>

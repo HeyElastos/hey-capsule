@@ -7,6 +7,13 @@ license = "MIT"
 authors = ["HeyElastos"]
 
 [dependencies]
+# Shared chat engine (rlib). hey-social consumes the security-critical core
+# from here so it stays byte-identical to hey-messenger — one chat network,
+# one audit surface. Migrated leaf-first: crypto + identity are re-exported
+# from the engine (see src/crypto.rs, src/identity.rs). The runtime-boundary
+# modules (runtime/session/passkey/peer_receiver) still carry hey-social's
+# own per-capsule wiring and move to the engine's CapsuleCtx in a later phase.
+hey-core = { path = "../hey-core" }
 leptos = { version = "0.7", features = ["csr"] }
 leptos_router = "0.7"
 console_error_panic_hook = "0.1"
@@ -18,6 +25,10 @@ serde-wasm-bindgen = "0.6"
 gloo-net = { version = "0.6", features = ["http", "json"] }
 gloo-storage = "0.3"
 gloo-timers = { version = "0.3", features = ["futures"] }
+# Concurrent provider fetches — futures::future::join_all keeps N requests
+# in flight on the single WASM thread, so a feed page resolves in ~one batch
+# instead of N sequential round-trips. alloc-only; no std threads needed.
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
 js-sys = "0.3"
 ed25519-compact = { version = "2", default-features = false }
 base64 = "0.22"

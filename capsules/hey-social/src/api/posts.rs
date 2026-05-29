@@ -130,9 +130,17 @@ pub async fn write_feed_index(idx: &[FeedEntry]) -> Result<(), RuntimeError> {
 // Pull the most recent N posts from the local feed cache.
 pub async fn get_posts(limit: usize) -> Result<Vec<Post>, RuntimeError> {
     let idx = read_feed_index().await?;
-    let mut out = Vec::with_capacity(idx.len().min(limit));
-    for entry in idx.into_iter().take(limit) {
-        if let Some(p) = read_post(&entry.id).await? {
+    // Fetch each post record concurrently. read_post is a localhost://
+    // provider round-trip; join_all keeps up to `limit` of them in flight on
+    // the single WASM thread, so a feed page resolves in ~one batch instead
+    // of `limit` sequential awaits. Semantics match the old serial loop:
+    // join_all preserves input order, and the first read error still
+    // propagates.
+    let ids: Vec<String> = idx.into_iter().take(limit).map(|e| e.id).collect();
+    let results = futures::future::join_all(ids.iter().map(|id| read_post(id))).await;
+    let mut out = Vec::with_capacity(ids.len());
+    for r in results {
+        if let Some(p) = r? {
             out.push(p);
         }
     }

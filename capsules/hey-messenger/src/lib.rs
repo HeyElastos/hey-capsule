@@ -10,12 +10,12 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Event, HtmlInputElement, HtmlTextAreaElement, KeyboardEvent, MouseEvent};
 
-use hey_chat::api::dms::{
+use hey_core::api::dms::{
     accept_invite, generate_invite, list_contacts, mark_read, read_conversation, send_message,
     DmContact, DmMessage, IdentityMode,
 };
-use hey_chat::passkey::{passkey_supported, sign_in_via_runtime};
-use hey_chat::session;
+use hey_core::passkey::{passkey_supported, sign_in_via_runtime};
+use hey_core::session;
 
 // Derive the router base from the iframe mount path. Under YunoHost the
 // capsule loads at e.g. `/apps/hey-messenger/` — without this the Router
@@ -41,12 +41,12 @@ pub fn App() -> impl IntoView {
     //   3. pre-warm the capability tokens this capsule declared,
     //   4. start the chat receive loop (no-op while signed out).
     spawn_local(async {
-        let _ = hey_chat::runtime::redeem_launch_token().await;
-        hey_chat::runtime::scrub_launch_token_from_url();
-        hey_chat::runtime::acquire_boot_capabilities().await;
+        let _ = hey_core::runtime::redeem_launch_token().await;
+        hey_core::runtime::scrub_launch_token_from_url();
+        hey_core::runtime::acquire_boot_capabilities().await;
     });
     spawn_local(async {
-        hey_chat::peer_receiver::run().await;
+        hey_core::peer_receiver::run().await;
     });
 
     let base = router_base();
@@ -87,7 +87,7 @@ fn SignInGate() -> impl IntoView {
             return;
         }
         spawn_local(async move {
-            if hey_chat::api::dms::adopt_provider_identity().await.is_some() {
+            if hey_core::api::dms::adopt_provider_identity().await.is_some() {
                 signed_in.set(true);
             }
         });

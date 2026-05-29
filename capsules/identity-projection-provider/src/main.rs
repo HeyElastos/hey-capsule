@@ -26,7 +26,7 @@
 //!   verify    { did_key, payload_b64, signature_hex } -> { valid }
 //!   shutdown                                          -> ok
 //!
-//! Crypto MUST match hey-chat/src/crypto.rs exactly (ml-kem 0.2, x25519-dalek
+//! Crypto MUST match hey-core/src/crypto.rs exactly (ml-kem 0.2, x25519-dalek
 //! 2, Ed25519): x25519 is derived from the Ed25519 seed (same 32 bytes), the
 //! ML-KEM keypair is generated deterministically from a per-principal seed so
 //! it is stable across restarts (peers cache the public key).
@@ -135,7 +135,7 @@ impl Response {
 // ── Per-principal key bundle ─────────────────────────────────────────
 
 /// All key material for one (principal, namespace). The Ed25519 seed roots
-/// both signing and the X25519 key (same 32 bytes, as hey-chat does); the
+/// both signing and the X25519 key (same 32 bytes, as hey-core does); the
 /// ML-KEM keypair is derived deterministically from a separate per-principal
 /// seed. Held only in this process.
 struct KeyBundle {
@@ -153,7 +153,7 @@ impl KeyBundle {
         XPub::from(&self.x_secret).to_bytes()
     }
     /// ECDH against an ephemeral X25519 pubkey — the recipient half of
-    /// hey-chat's sealed-sender decrypt. Returns the 32-byte shared secret.
+    /// hey-core's sealed-sender decrypt. Returns the 32-byte shared secret.
     fn x25519_dh(&self, eph_pub: [u8; 32]) -> String {
         let shared = self.x_secret.diffie_hellman(&XPub::from(eph_pub));
         B64.encode(shared.as_bytes())
@@ -219,7 +219,7 @@ fn derive_seed(master: &[u8; 32], tag: &[u8], principal: &str, namespace: &str) 
 fn derive_bundle(master: &[u8; 32], principal: &str, namespace: &str) -> KeyBundle {
     let ed_seed = derive_seed(master, b"ed25519", principal, namespace);
     let ed = SigningKey::from_bytes(&ed_seed);
-    // X25519 from the SAME seed as Ed25519 — mirrors hey-chat::crypto::x25519_from_seed.
+    // X25519 from the SAME seed as Ed25519 — mirrors hey-core::crypto::x25519_from_seed.
     let x_secret = XSecret::from(ed_seed);
 
     // ML-KEM-768 generated from a deterministic RNG seeded per-principal, so

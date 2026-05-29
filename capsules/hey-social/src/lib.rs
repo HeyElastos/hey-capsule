@@ -57,9 +57,21 @@ pub fn App() -> impl IntoView {
     // need. Landing owning its own inherit means the navigate-away path
     // is the same reactive context as the render path.
     spawn_local(async {
-        let _ = runtime::redeem_launch_token().await;
+        let redeemed = runtime::redeem_launch_token().await;
+        runtime::boot_log(&format!("launch-token redeem -> {redeemed}"));
         runtime::scrub_launch_token_from_url();
         runtime::acquire_boot_capabilities().await;
+        runtime::boot_log("boot capabilities acquired");
+    });
+
+    // Safety net: the boot splash is normally dismissed by Home (warp into
+    // feed) or Landing (fade to the sign-in CTA). If the iframe was reloaded
+    // on a sub-route (e.g. /profile) neither fires, so guarantee the splash
+    // never sticks — a plain fade after a generous beat. No-op if already
+    // dismissed by the nicer transition.
+    spawn_local(async {
+        runtime::sleep_ms(4000).await;
+        runtime::hide_boot_splash();
     });
 
     // Start the peer-receive subscription loop. No-op while signed out;

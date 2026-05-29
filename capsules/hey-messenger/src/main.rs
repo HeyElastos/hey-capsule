@@ -1,7 +1,7 @@
-use hey_chat::ctx::{init, CapsuleCtx};
+use hey_core::ctx::{init, CapsuleCtx};
 use hey_messenger::App;
 
-// Per-capsule identity for the shared hey-chat engine. The messenger uses
+// Per-capsule identity for the shared hey-core engine. The messenger uses
 // its OWN capsule id, storage namespace, and localStorage/sessionStorage
 // keys (separate per-app session — same DID via the passkey PRF, but an
 // independent sign-in), and requests ONLY the providers it needs:

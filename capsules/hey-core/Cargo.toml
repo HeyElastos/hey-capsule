@@ -1,0 +1,59 @@
+[package]
+name = "hey-core"
+description = "Shared chat engine for the Hey capsule pack — PQ-E2E crypto, did:key identity, signed events, Carrier transport, and the sealed-sender DM workflow. Consumed by hey-social and hey-messenger as a path rlib so the security-critical core stays byte-identical across both apps."
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+authors = ["HeyElastos"]
+
+# Plain rlib (default crate-type) — NOT cdylib. The wasm bin crates
+# (hey-social, hey-messenger) pull this in via `hey-core = { path = "../hey-core" }`
+# and Trunk compiles the final wasm. This crate is wasm32-only (it pulls
+# getrandom('js') + web-sys); it is deliberately excluded from the
+# workspace `default-members` so a host-target `cargo build` at the root
+# does not try to build it.
+
+[dependencies]
+# ── Pure security core (Phase 1) ──────────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# dms.rs/outbox.rs mint local ids with uuid v4 (js feature for wasm RNG).
+uuid = { version = "1", features = ["v4", "js"] }
+# dms.rs renders invite-link QR codes to inline SVG.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+ed25519-compact = { version = "2", default-features = false }
+base64 = "0.22"
+sha2 = "0.10"
+# Post-quantum E2E for DMs — hybrid ML-KEM-768 + X25519 + ChaCha20Poly1305.
+# Versions/features MUST match hey-social's Cargo.toml exactly so the
+# envelope stays byte-identical (HKDF_INFO = "hey-messenger/hpq-1").
+ml-kem = "0.2"
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "rand_core"] }
+hkdf = "0.12"
+rand_core = { version = "0.6", features = ["std"] }
+# getrandom 'js' backs OsRng on wasm32 — required for key generation.
+getrandom = { version = "0.2", features = ["js"] }
+# events.rs logs via console + stamps ts with Date::now on wasm.
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+# runtime.rs/session.rs use localStorage + sessionStorage via gloo-storage,
+# await JS promises via wasm-bindgen-futures, and convert fetch JSON via
+# serde-wasm-bindgen. Versions/features match hey-social's Cargo.toml.
+gloo-storage = "0.3"
+wasm-bindgen-futures = "0.4"
+serde-wasm-bindgen = "0.6"
+web-sys = { version = "0.3", features = [
+  # runtime.rs HTTP transport boundary + session.rs sessionStorage wipe.
+  "Window",
+  "Location",
+  "History",
+  "UrlSearchParams",
+  "Request",
+  "RequestInit",
+  "RequestCredentials",
+  "Response",
+  "Headers",
+  "Storage",
+  "console",
+] }
