@@ -798,6 +798,61 @@ pub mod blobs {
     }
 }
 
+// ── Identity provider (runtime-held signing, no capsule keystore) ────
+//
+// Wrappers over the identity-projection-provider (capsules/identity-projection-
+// provider) which holds the Ed25519 key server-side and signs on the capsule's
+// behalf — the wallet-style "runtime holds the key, capsule asks it to sign"
+// model. Reachable once fork patch 0004 reserves the `identity` scheme AND the
+// provider is installed/registered; patch 0003's gateway arm already authorizes
+// it for hey-social/hey-messenger.
+//
+// ADDITIVE for now: nothing calls these yet. events.rs keeps signing with the
+// local PRF-derived key until the provider is verified dispatching on a real
+// box — flipping signing over before then would break a working app. Wire
+// matches the provider's protocol (STATUS.md): whoami/sign/verify.
+
+pub mod identity_provider {
+    use super::{provider_call, RuntimeError, B64};
+    use base64::Engine;
+    use serde_json::{json, Value};
+
+    /// The runtime-projected signing identity for `namespace`.
+    /// Returns `{ did_key, public_key_hex, namespace }`.
+    pub async fn whoami(namespace: &str) -> Result<Value, RuntimeError> {
+        provider_call("identity", "whoami", json!({ "namespace": namespace })).await
+    }
+
+    /// Sign `payload` with the runtime-held key for `namespace`.
+    /// Returns `{ signature_hex }`. The capsule never sees the key.
+    pub async fn sign(namespace: &str, payload: &[u8]) -> Result<Value, RuntimeError> {
+        provider_call(
+            "identity",
+            "sign",
+            json!({ "namespace": namespace, "payload_b64": B64.encode(payload) }),
+        )
+        .await
+    }
+
+    /// Verify `signature_hex` over `payload` against `did_key`. Returns `{ valid }`.
+    pub async fn verify(
+        did_key: &str,
+        payload: &[u8],
+        signature_hex: &str,
+    ) -> Result<Value, RuntimeError> {
+        provider_call(
+            "identity",
+            "verify",
+            json!({
+                "did_key": did_key,
+                "payload_b64": B64.encode(payload),
+                "signature_hex": signature_hex,
+            }),
+        )
+        .await
+    }
+}
+
 // ── Storage ───────────────────────────────────────────────────────────
 //
 // Two route shapes, same disk layout. Detected on first call and memoized.
