@@ -17,6 +17,9 @@ members = [
     # Shared chat engine (rlib) consumed by hey-social + hey-messenger.
     # wasm32-only — kept out of default-members (see below).
     "capsules/hey-chat",
+    # Rust/Leptos messenger (Telegram-desktop replacement) — wasm32-only,
+    # built with trunk; kept out of default-members like hey-social.
+    "capsules/hey-messenger",
 ]
 default-members = [
     "capsules/blobs-provider",

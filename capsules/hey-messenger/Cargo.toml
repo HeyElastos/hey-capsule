@@ -1,0 +1,35 @@
+[package]
+name = "hey-messenger"
+description = "Hey Chat — Rust + Leptos + WASM messenger (Telegram-desktop replacement) on the shared hey-chat engine"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["HeyElastos"]
+
+# wasm32-only Leptos app — build with `trunk build` from this dir, NOT
+# `cargo build` at the workspace root (kept out of default-members). The
+# whole chat engine comes from the shared hey-chat path dependency; this
+# crate is the UI + the per-capsule CapsuleCtx wiring.
+
+[dependencies]
+leptos = { version = "0.7", features = ["csr"] }
+leptos_router = "0.7"
+console_error_panic_hook = "0.1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The shared chat engine: crypto, transport, DM workflow, session, passkey.
+hey-chat = { path = "../hey-chat" }
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "Window",
+  "Location",
+  "Document",
+  "Element",
+  "HtmlElement",
+  "Event",
+  "EventTarget",
+]

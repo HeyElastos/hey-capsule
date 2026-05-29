@@ -1723,6 +1723,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hey-messenger"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "hey-chat",
+ "leptos",
+ "leptos_router",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "hey-social"
 version = "0.0.1"
 dependencies = [
