@@ -268,23 +268,30 @@ pub fn Profile() -> impl IntoView {
                                     {move || if editing.get() && is_self_view.get() {
                                         view! {
                                             <Modal open=editing>
-                                            <div class="frosted-card frosted-card-strong p-5 space-y-3 text-left">
-                                            <h3 class="text-base font-semibold text-primary">"Edit profile"</h3>
-                                                <input
-                                                    class="frosted-input text-sm"
-                                                    type="text"
-                                                    maxlength="30"
-                                                    prop:value=move || edit_name.get()
-                                                    on:input=on_name_input
-                                                />
-                                                <textarea
-                                                    class="frosted-input text-sm"
-                                                    rows="2"
-                                                    maxlength="280"
-                                                    placeholder="Bio"
-                                                    prop:value=move || edit_bio.get()
-                                                    on:input=on_bio_input
-                                                />
+                                            <div class="frosted-card frosted-card-strong p-6 space-y-4 text-left">
+                                            <h3 class="text-lg font-bold text-white">"Edit profile"</h3>
+                                                <label class="block">
+                                                    <span class="mb-1 block text-xs font-semibold uppercase tracking-wider text-white/70">"Nickname"</span>
+                                                    <input
+                                                        class="edit-field"
+                                                        type="text"
+                                                        maxlength="30"
+                                                        placeholder="Your nickname"
+                                                        prop:value=move || edit_name.get()
+                                                        on:input=on_name_input
+                                                    />
+                                                </label>
+                                                <label class="block">
+                                                    <span class="mb-1 block text-xs font-semibold uppercase tracking-wider text-white/70">"Bio"</span>
+                                                    <textarea
+                                                        class="edit-field"
+                                                        rows="3"
+                                                        maxlength="280"
+                                                        placeholder="Say something about yourself…"
+                                                        prop:value=move || edit_bio.get()
+                                                        on:input=on_bio_input
+                                                    />
+                                                </label>
                                                 {move || {
                                                     let m = error.get();
                                                     if m.is_empty() { view! { <></> }.into_any() }
@@ -340,7 +347,7 @@ pub fn Profile() -> impl IntoView {
                                                 // follower-count API, so we never fabricate one.
                                                 <div class="mt-3 flex items-center justify-center gap-6 sm:justify-start">
                                                     <div class="flex flex-col items-center sm:items-start">
-                                                        <span class="text-lg font-bold text-slate-900 dark:text-slate-50">
+                                                        <span class="text-lg font-bold text-white">
                                                             {move || posts.get().len()}
                                                         </span>
                                                         <span class="text-xs uppercase tracking-wider text-muted">"Posts"</span>
@@ -374,9 +381,16 @@ pub fn Profile() -> impl IntoView {
                                             <button
                                                 type="button"
                                                 on:click=move |_| qr_open.set(true)
-                                                class="unfrost inline-flex items-center gap-1 rounded-full bg-white/10 hover:bg-white/20 border border-surface text-primary px-3 py-1 text-xs font-medium"
+                                                title="Show QR code"
+                                                aria-label="Show QR code"
+                                                class="unfrost inline-flex items-center gap-1 rounded-full bg-white/10 hover:bg-white/20 border border-surface text-primary px-2.5 py-1 text-xs font-medium"
                                             >
-                                                "QR"
+                                                <svg viewBox="0 0 24 24" class="h-4 w-4" fill="currentColor" aria-hidden="true">
+                                                    <path d="M3 3h7v7H3V3zm2 2v3h3V5H5z" />
+                                                    <path d="M14 3h7v7h-7V3zm2 2v3h3V5h-3z" />
+                                                    <path d="M3 14h7v7H3v-7zm2 2v3h3v-3H5z" />
+                                                    <path d="M13 13h3v3h-3v-3zm5 0h3v3h-3v-3zm-5 5h3v3h-3v-3zm5 0h3v3h-3v-3z" />
+                                                </svg>
                                             </button>
                                         </div>
                                     }.into_any()
