@@ -454,6 +454,35 @@ pub async fn add_comment(
     Ok(post)
 }
 
+/// Delete a comment you authored (and any direct replies to it). Only the
+/// comment's author may delete it — matched by did_key. Mirrors add_comment:
+/// mutate the post locally, persist, and federate a `post.comment.delete` so
+/// peers drop it too.
+pub async fn delete_comment(post_id: &str, comment_id: &str) -> Result<Post, RuntimeError> {
+    let me = ensure_profile().await?;
+    let mut post = read_post(post_id)
+        .await?
+        .ok_or_else(|| RuntimeError::new("Post not found"))?;
+    let is_mine = post
+        .comments
+        .iter()
+        .any(|c| c.id == comment_id && c.user_did == me.did_key);
+    if !is_mine {
+        return Err(RuntimeError::new("Not your comment"));
+    }
+    // Drop the comment and any direct replies to it.
+    post.comments
+        .retain(|c| c.id != comment_id && c.parent_id.as_deref() != Some(comment_id));
+    write_post(&post).await?;
+    let _ = sign_and_publish(
+        &format!("hey-v0/user/{}/posts", post.user_did),
+        "post.comment.delete",
+        json!({ "post_id": post_id, "comment_id": comment_id }),
+    )
+    .await;
+    Ok(post)
+}
+
 // Convenience: encode a Rust byte slice for upload via the JSON-friendly
 // helpers above. Kept here so callers in pages/ don't need to depend on
 // base64 directly.

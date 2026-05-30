@@ -173,15 +173,17 @@
 
 /* ── PAGE TRANSITIONS ─────────────────────────────────────────────
    Light enter for NORMAL navigation (the heavy warp is reserved for
-   onboarding→home). Opacity + a small translate, deliberately NO scale
-   so it never forms a transform stacking context that would re-anchor
-   the fixed chrome (TopHeader / FloatingDock). Applied only to a page's
-   CONTENT wrapper — never around the fixed chrome. */
+   onboarding→home). Primarily an OPACITY cross-fade with only a hair of
+   translate (≤4px) so switching environments reads as a gentle settle,
+   not a pop / hard reload. Deliberately NO scale so it never forms a
+   transform stacking context that would re-anchor the fixed chrome
+   (TopHeader / FloatingDock). Applied only to a page's CONTENT wrapper
+   — never around the fixed chrome. */
 @keyframes page-enter {
-  0%   { opacity: 0; transform: translateY(12px); }
+  0%   { opacity: 0; transform: translateY(4px); }
   100% { opacity: 1; transform: translateY(0); }
 }
-.page-enter { animation: page-enter var(--duration-standard) var(--ease-out-back) both; }
+.page-enter { animation: page-enter var(--duration-quick) var(--ease-out-back) both; }
 
 /* ── MODAL / LIST CHOREOGRAPHY ────────────────────────────────────
    Backdrop uses the prebuilt .animate-fade-in (300ms). The inner panel

@@ -417,6 +417,25 @@ fn DropZone(
     }
 }
 
+/// Cumulative fan offset (in px) for the card at `index` in the staged pile.
+///
+/// The first ~5 cards spread by a generous step (42px right, 18px down) so each
+/// polaroid clearly peeks out from under the next; past that the step tightens
+/// (to 14px / 6px) so a big pile stays tidy and doesn't run off-screen. Returns
+/// the running totals `(dx, dy)`.
+fn fan_offset(index: usize) -> (f64, f64) {
+    const WIDE: usize = 5; // cards 0..=5 fan out generously
+    const STEP_X_WIDE: f64 = 42.0;
+    const STEP_Y_WIDE: f64 = 18.0;
+    const STEP_X_TIGHT: f64 = 14.0;
+    const STEP_Y_TIGHT: f64 = 6.0;
+    let wide = index.min(WIDE);
+    let tight = index.saturating_sub(WIDE);
+    let dx = wide as f64 * STEP_X_WIDE + tight as f64 * STEP_X_TIGHT;
+    let dy = wide as f64 * STEP_Y_WIDE + tight as f64 * STEP_Y_TIGHT;
+    (dx, dy)
+}
+
 #[component]
 fn PolaroidGrid(
     staged: RwSignal<Vec<StagedFile>>,
@@ -433,12 +452,14 @@ fn PolaroidGrid(
     };
     let pile_style = move || {
         let n = staged.get().len();
-        // Card is 9.5rem wide; fan grows ~18px per card. Reserve room for the
-        // fan + a little hover-lift headroom.
-        let extra = (n.saturating_sub(1) as f64) * 18.0;
+        // Card is 9.5rem (~152px) wide. Each card fans right+down by a
+        // cumulative offset (see `fan_offset`); reserve room for the widest
+        // fan plus a little hover-lift headroom so nothing clips.
+        let last = n.saturating_sub(1);
+        let (ex, ey) = fan_offset(last);
         format!(
-            "width: calc(9.5rem + {extra}px); min-height: calc(9.5rem + {hh}px);",
-            hh = 28.0 + extra * 0.35,
+            "width: calc(9.5rem + {ex}px); min-height: calc(9.5rem + {ey}px);",
+            ey = ey + 36.0,
         )
     };
     view! {
@@ -464,13 +485,13 @@ fn PolaroidGrid(
                         let click_remove = move |_| remove(id_for_remove.clone());
                         let is_video = f.mime.starts_with("video/");
                         // Deterministic fan from the index: each card shifts
-                        // right/down a touch and tilts within +/-4deg. Later
-                        // cards stack on top (higher z-index) so the newest is
-                        // fully visible and earlier ones peek out beneath.
-                        let dx = (i as f64) * 18.0;
-                        let dy = (i as f64) * 8.0;
-                        // Cycle of tasteful tilts, capped to [-4, 4] deg.
-                        let tilts = [-4.0_f64, 3.0, -2.0, 4.0, -3.0, 2.0];
+                        // right/down enough that every polaroid clearly peeks
+                        // out from under the one on top of it. Later cards stack
+                        // on top (higher z-index) so the newest is fully visible
+                        // and earlier ones fan out beneath like a corkboard pile.
+                        let (dx, dy) = fan_offset(i);
+                        // Cycle of tasteful tilts, capped to [-6, 6] deg.
+                        let tilts = [-6.0_f64, 4.0, -3.0, 6.0, -4.0, 3.0];
                         let rot = tilts[i % tilts.len()];
                         let z = i + 1;
                         let base_style = format!(
