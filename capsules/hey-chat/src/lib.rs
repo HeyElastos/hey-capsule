@@ -77,18 +77,33 @@ fn Root() -> impl IntoView {
 fn SignInGate() -> impl IntoView {
     let signed_in = RwSignal::new(session::current().is_some());
 
-    // No-tap adoption (wallet model): with no local session, ask the runtime
-    // identity provider who we are. On success we're signed in with a
-    // provider-backed session (did:key, no local seed → the runtime signs &
-    // decrypts) and never show the passkey card. If the provider isn't
-    // available (vanilla upstream), this is a no-op and the card's passkey
-    // path is the fallback — so the app still works without the fork.
+    // No-tap adoption (wallet model): with no local session, sign in without
+    // a passkey tap by deriving identity from the runtime — the same chain
+    // hey-social's Landing uses, so the two apps behave identically:
+    //
+    //   1. identity provider (`identity/whoami`) → provider-backed session
+    //      (did:key, no local seed → the runtime signs & decrypts).
+    //   2. fallback: inherit the runtime session (`/api/session`, wallet SSO
+    //      from Home's launch token). This is what actually no-taps users in
+    //      when the identity provider isn't registered yet — without it
+    //      hey-chat forces a passkey tap that hey-social never asks for.
+    //      inherit_session() returns a Session but does NOT persist it (unlike
+    //      adopt_provider_identity), so set() it before flipping signed_in.
+    //
+    // If neither yields an identity (vanilla upstream — both return None), this
+    // is a no-op and the card's passkey path is the fallback, so the app still
+    // works without the fork.
     Effect::new(move |_| {
         if signed_in.get_untracked() {
             return;
         }
         spawn_local(async move {
             if hey_core::api::dms::adopt_provider_identity().await.is_some() {
+                signed_in.set(true);
+                return;
+            }
+            if let Some(inherited) = hey_core::runtime::inherit_session().await {
+                session::set(&inherited);
                 signed_in.set(true);
             }
         });
