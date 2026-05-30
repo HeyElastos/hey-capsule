@@ -2,8 +2,8 @@
 //
 // Renders:
 //   * Author header (avatar + name + time-ago)
-//   * Multi-image scroll-snap carousel (left/right arrows for desktop;
-//     swipe-friendly on mobile via .scroll-snap-x in styles.css)
+//   * Multi-image CAROUSEL: one photo at a time, switched by prev/next
+//     arrows, horizontal pointer-drag, and tappable dot indicators
 //   * Reactions row: heart toggle + emoji picker (6 common emojis) +
 //     reaction chip per emoji showing count
 //   * Comment count + click-to-expand composer with author avatar and
@@ -269,7 +269,6 @@ fn PostHeader(
 
 #[component]
 fn PostMedia(post: RwSignal<Post>) -> impl IntoView {
-    let count = Memo::new(move |_| post.read().images.len());
     view! {
         {move || {
             let images = post.read().images.clone();
@@ -297,38 +296,131 @@ fn PostMedia(post: RwSignal<Post>) -> impl IntoView {
                     }.into_any()
                 };
             }
-            // Multi-image carousel — scroll-snap-x from styles.css.
-            view! {
-                <div class="relative">
-                    <div class="scroll-snap-x flex overflow-x-auto">
-                        {images.into_iter().map(|m| {
-                            let url = ipfs::gateway_url(&m.cid, None);
-                            if m.media_type == "video" {
+            // Multi-image CAROUSEL: one slide at a time, switched by arrows,
+            // pointer-drag, or dot taps. `active` is the current slide index;
+            // the flex track is translated by `active * 100%`.
+            view! { <Carousel images=images /> }.into_any()
+        }}
+    }
+}
+
+/// One-photo-at-a-time carousel for multi-image posts. Switches slides via
+/// prev/next arrows, horizontal pointer-drag (threshold), and tappable dots.
+#[component]
+fn Carousel(images: Vec<crate::api::posts::MediaTile>) -> impl IntoView {
+    let len = images.len();
+    // Current slide index.
+    let active = RwSignal::new(0usize);
+    // Pointer-drag start x (in client px); None when no drag is in progress.
+    let drag_start = RwSignal::new(None::<i32>);
+
+    let go_prev = move |_| active.update(|i| if *i > 0 { *i -= 1; });
+    let go_next = move |_| active.update(|i| if *i + 1 < len { *i += 1; });
+
+    let on_down = move |ev: web_sys::PointerEvent| drag_start.set(Some(ev.client_x()));
+    let on_up = move |ev: web_sys::PointerEvent| {
+        if let Some(start) = drag_start.get() {
+            let delta = ev.client_x() - start;
+            if delta < -40 {
+                active.update(|i| if *i + 1 < len { *i += 1; });
+            } else if delta > 40 {
+                active.update(|i| if *i > 0 { *i -= 1; });
+            }
+        }
+        drag_start.set(None);
+    };
+    let on_leave = move |_: web_sys::PointerEvent| drag_start.set(None);
+
+    view! {
+        <div class="relative overflow-hidden select-none">
+            // Sliding track: each slide is full width; translate to show `active`.
+            <div
+                class="flex transition-transform duration-300 ease-out"
+                style=move || format!(
+                    "transform: translateX(-{}%); transition-timing-function: cubic-bezier(0,0,0.2,1)",
+                    active.get() * 100
+                )
+                on:pointerdown=on_down
+                on:pointerup=on_up
+                on:pointerleave=on_leave
+            >
+                {images.into_iter().map(|m| {
+                    let url = ipfs::gateway_url(&m.cid, None);
+                    view! {
+                        <div class="w-full flex-none">
+                            {if m.media_type == "video" {
                                 view! {
                                     <video
                                         controls
-                                        class="block w-full flex-none bg-black"
+                                        class="block w-full bg-black"
                                         src=url
                                     />
                                 }.into_any()
                             } else {
                                 view! {
                                     <img
-                                        class="block w-full flex-none bg-slate-100 dark:bg-slate-800 aspect-square object-cover"
+                                        class="block w-full bg-slate-100 dark:bg-slate-800 aspect-square object-cover"
                                         src=url
                                         alt=m.name.clone()
                                         loading="lazy"
+                                        draggable="false"
                                     />
                                 }.into_any()
-                            }
-                        }).collect::<Vec<_>>()}
-                    </div>
-                    <span class="carousel-badge pointer-events-none">
-                        {move || format!("1/{}", count.get())}
-                    </span>
-                </div>
-            }.into_any()
-        }}
+                            }}
+                        </div>
+                    }
+                }).collect::<Vec<_>>()}
+            </div>
+
+            // PREV arrow — hidden at the first slide.
+            <button
+                type="button"
+                on:click=go_prev
+                aria-label="Previous photo"
+                class="absolute left-3 top-1/2 -translate-y-1/2 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/45 hover:bg-black/75 text-white backdrop-blur shadow-lg transition-colors"
+                class:hidden=move || active.get() == 0
+            >
+                <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M15 18l-6-6 6-6" />
+                </svg>
+            </button>
+
+            // NEXT arrow — hidden at the last slide.
+            <button
+                type="button"
+                on:click=go_next
+                aria-label="Next photo"
+                class="absolute right-3 top-1/2 -translate-y-1/2 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/45 hover:bg-black/75 text-white backdrop-blur shadow-lg transition-colors"
+                class:hidden=move || (active.get() + 1 >= len)
+            >
+                <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9 6l6 6-6 6" />
+                </svg>
+            </button>
+
+            // Position counter badge — updates with `active`.
+            <span class="absolute right-3 top-3 z-10 pointer-events-none rounded-full bg-black/45 text-white backdrop-blur text-[11px] font-semibold px-2 py-0.5 shadow">
+                {move || format!("{} / {}", active.get() + 1, len)}
+            </span>
+
+            // Dot indicator — one per slide, the active one filled; tap to jump.
+            <div class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5">
+                {(0..len).map(|idx| view! {
+                    <button
+                        type="button"
+                        on:click=move |_| active.set(idx)
+                        aria-label=format!("Go to photo {}", idx + 1)
+                        class="h-2 w-2 rounded-full transition-colors cursor-pointer"
+                        class:bg-white=move || active.get() == idx
+                        style=move || if active.get() == idx {
+                            String::new()
+                        } else {
+                            "background: rgba(255,255,255,0.45)".to_string()
+                        }
+                    />
+                }).collect::<Vec<_>>()}
+            </div>
+        </div>
     }
 }
 

@@ -1,15 +1,16 @@
-// Sticky top header — Hey wordmark on left, photo/video tabs in center,
-// logout on right. Everything else (search/bell/add-friend) lives in the
-// FloatingDock now.
+// Sticky top header — Hey wordmark on left, photo/video tabs in center.
+// No Log out button: in the wallet model identity lives in the runtime, so
+// "log out" can't really log you out (the next probe re-adopts you). Close
+// the app to leave; open it to auto-login. Search/bell/add-friend live in
+// the FloatingDock.
 
 use leptos::ev::MouseEvent;
 use leptos::prelude::*;
 use leptos_router::hooks::{use_location, use_navigate};
 use leptos_router::NavigateOptions;
 
-use crate::components::icons::{CameraIcon, LogoutIcon, VideoIcon};
+use crate::components::icons::{CameraIcon, VideoIcon};
 use crate::components::NavLink;
-use crate::session;
 
 fn current_base() -> String {
     let Some(win) = web_sys::window() else { return String::new(); };
@@ -29,14 +30,6 @@ pub fn TopHeader() -> impl IntoView {
     let is_videos = move || {
         let p = location.pathname.get();
         p.starts_with("/videos") || p == "/clips"
-    };
-
-    let logout = {
-        let navigate = navigate.clone();
-        move |_| {
-            session::clear();
-            navigate("/", NavigateOptions::default());
-        }
     };
 
     let click_to = {
@@ -88,17 +81,9 @@ pub fn TopHeader() -> impl IntoView {
                     </a>
                 </nav>
 
-                <div class="shrink-0">
-                    <button
-                        type="button"
-                        on:click=logout
-                        class="icon-btn-ghost p-2"
-                        aria-label="Log out"
-                        title="Log out"
-                    >
-                        <LogoutIcon class="h-5 w-5" />
-                    </button>
-                </div>
+                // Right-side spacer keeps the center tabs visually centered
+                // now that the Log out button is gone.
+                <div class="h-9 w-9 shrink-0" aria-hidden="true"></div>
             </div>
         </header>
     }

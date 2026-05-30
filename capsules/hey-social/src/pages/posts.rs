@@ -425,6 +425,22 @@ fn PolaroidGrid(
     dragging: RwSignal<bool>,
     on_drop: impl Fn(DragEvent) + 'static + Clone + Send + Sync,
 ) -> impl IntoView {
+    // Computed OUTSIDE the view! macro: the `Vec<_>` turbofish / type
+    // angle-brackets confuse the macro parser into reading them as tags.
+    let pile_items = move || {
+        let v: Vec<(usize, StagedFile)> = staged.get().into_iter().enumerate().collect();
+        v
+    };
+    let pile_style = move || {
+        let n = staged.get().len();
+        // Card is 9.5rem wide; fan grows ~18px per card. Reserve room for the
+        // fan + a little hover-lift headroom.
+        let extra = (n.saturating_sub(1) as f64) * 18.0;
+        format!(
+            "width: calc(9.5rem + {extra}px); min-height: calc(9.5rem + {hh}px);",
+            hh = 28.0 + extra * 0.35,
+        )
+    };
     view! {
         <div
             class="drop-zone rounded-3xl p-4 sm:p-5 bg-white/5 border-2 border-dashed border-surface"
@@ -434,17 +450,54 @@ fn PolaroidGrid(
             on:dragleave=move |ev: DragEvent| { ev.prevent_default(); dragging.set(false); }
             on:drop=on_drop.clone()
         >
-            <div class="flex flex-wrap gap-5 justify-center sm:justify-start">
+            <div class="flex flex-wrap gap-5 justify-center sm:justify-start items-start">
+                // Stacked deck of staged polaroids: a relatively-positioned
+                // "pile" whose cards are absolutely positioned + offset/rotated
+                // by index so they overlap like a corkboard stack.
+                <div class="relative" style=pile_style>
                 <For
-                    each=move || staged.get()
-                    key=|f| f.id.clone()
-                    children=move |f: StagedFile| {
+                    each=pile_items
+                    key=|(_, f)| f.id.clone()
+                    children=move |(i, f): (usize, StagedFile)| {
                         let id_for_remove = f.id.clone();
                         let remove = remove.clone();
                         let click_remove = move |_| remove(id_for_remove.clone());
                         let is_video = f.mime.starts_with("video/");
+                        // Deterministic fan from the index: each card shifts
+                        // right/down a touch and tilts within +/-4deg. Later
+                        // cards stack on top (higher z-index) so the newest is
+                        // fully visible and earlier ones peek out beneath.
+                        let dx = (i as f64) * 18.0;
+                        let dy = (i as f64) * 8.0;
+                        // Cycle of tasteful tilts, capped to [-4, 4] deg.
+                        let tilts = [-4.0_f64, 3.0, -2.0, 4.0, -3.0, 2.0];
+                        let rot = tilts[i % tilts.len()];
+                        let z = i + 1;
+                        let base_style = format!(
+                            "position:absolute; top:0; left:0; width:9.5rem; \
+                             z-index:{z}; \
+                             transform: translate({dx}px, {dy}px) rotate({rot}deg); \
+                             transform-origin: center bottom; \
+                             transition: transform .18s ease, z-index 0s;",
+                        );
+                        // On hover, lift the card up and out of the pile and pop
+                        // it to the very top so lower cards become reachable.
+                        let hover_style = format!(
+                            "position:absolute; top:0; left:0; width:9.5rem; \
+                             z-index:999; \
+                             transform: translate({dx}px, {ly}px) rotate(0deg) scale(1.04); \
+                             transform-origin: center bottom; \
+                             transition: transform .18s ease, z-index 0s;",
+                            ly = dy - 22.0,
+                        );
+                        let hovered = RwSignal::new(false);
                         view! {
-                            <div class="win-frame pop-in" style="width: 9.5rem;">
+                            <div
+                                class="win-frame pop-in"
+                                style=move || if hovered.get() { hover_style.clone() } else { base_style.clone() }
+                                on:mouseenter=move |_| hovered.set(true)
+                                on:mouseleave=move |_| hovered.set(false)
+                            >
                                 <div class="win-media relative w-full aspect-square bg-slate-900">
                                     {if is_video {
                                         view! {
@@ -485,8 +538,9 @@ fn PolaroidGrid(
                         }
                     }
                 />
+                </div>
 
-                // "Add more" tile.
+                // "Add more" tile, kept beside the deck.
                 <label class="cursor-pointer flex flex-col items-center justify-center w-[9.5rem] h-[9.5rem] rounded-2xl border-2 border-dashed border-surface bg-white/5 hover:bg-white/10 transition-colors text-muted hover:text-accent">
                     <svg viewBox="0 0 24 24" class="h-8 w-8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M12 5v14M5 12h14" />

@@ -339,15 +339,13 @@ html.light .frosted-card-strong {
   position: relative;
   border-radius: 18px;
   padding: 5px;
-  background: rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(24px) saturate(150%);
-  -webkit-backdrop-filter: blur(24px) saturate(150%);
-  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   box-shadow:
-    0 20px 48px -18px rgba(0, 0, 0, 0.35),
-    0 4px 12px rgba(0, 0, 0, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+    0 24px 70px -12px rgba(15, 23, 42, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
   overflow: hidden;
   isolation: isolate;
   transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
@@ -355,30 +353,24 @@ html.light .frosted-card-strong {
               background-color 0.25s ease-out;
 }
 html.light .win-frame {
-  background: rgba(255, 255, 255, 0.55);
-  border-color: rgba(255, 255, 255, 0.80);
+  background: rgba(15, 23, 42, 0.06);
+  border-color: rgba(15, 23, 42, 0.12);
   box-shadow:
-    0 20px 48px -18px rgba(15, 23, 42, 0.25),
-    0 4px 12px rgba(15, 23, 42, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    inset 0 -1px 0 rgba(15, 23, 42, 0.05);
+    0 24px 70px -12px rgba(15, 23, 42, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.50);
 }
 .win-frame:hover {
   transform: translateY(-3px) scale(1.04);
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.14);
   box-shadow:
-    0 28px 60px -18px rgba(0, 0, 0, 0.45),
-    0 6px 16px rgba(0, 0, 0, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.55),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.10);
+    0 32px 84px -12px rgba(15, 23, 42, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 html.light .win-frame:hover {
-  background: rgba(255, 255, 255, 0.70);
+  background: rgba(15, 23, 42, 0.09);
   box-shadow:
-    0 28px 60px -18px rgba(15, 23, 42, 0.32),
-    0 6px 16px rgba(15, 23, 42, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 1.0),
-    inset 0 -1px 0 rgba(15, 23, 42, 0.05);
+    0 32px 84px -12px rgba(15, 23, 42, 0.30),
+    inset 0 1px 0 rgba(255, 255, 255, 0.60);
 }
 
 /* Top-edge highlight sweep — softer than the old ceramic shine so it
@@ -389,9 +381,9 @@ html.light .win-frame:hover {
   inset: 1px;
   border-radius: 17px;
   background: linear-gradient(180deg,
-    rgba(255, 255, 255, 0.30) 0%,
-    rgba(255, 255, 255, 0.08) 30%,
-    transparent 60%);
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(255, 255, 255, 0.02) 18%,
+    transparent 40%);
   pointer-events: none;
   z-index: 3;
 }
