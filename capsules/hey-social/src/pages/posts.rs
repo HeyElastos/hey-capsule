@@ -423,18 +423,6 @@ fn DropZone(
 /// polaroid clearly peeks out from under the next; past that the step tightens
 /// (to 14px / 6px) so a big pile stays tidy and doesn't run off-screen. Returns
 /// the running totals `(dx, dy)`.
-fn fan_offset(index: usize) -> (f64, f64) {
-    const WIDE: usize = 5; // cards 0..=5 fan out generously
-    const STEP_X_WIDE: f64 = 42.0;
-    const STEP_Y_WIDE: f64 = 18.0;
-    const STEP_X_TIGHT: f64 = 14.0;
-    const STEP_Y_TIGHT: f64 = 6.0;
-    let wide = index.min(WIDE);
-    let tight = index.saturating_sub(WIDE);
-    let dx = wide as f64 * STEP_X_WIDE + tight as f64 * STEP_X_TIGHT;
-    let dy = wide as f64 * STEP_Y_WIDE + tight as f64 * STEP_Y_TIGHT;
-    (dx, dy)
-}
 
 #[component]
 fn PolaroidGrid(
@@ -450,18 +438,6 @@ fn PolaroidGrid(
         let v: Vec<(usize, StagedFile)> = staged.get().into_iter().enumerate().collect();
         v
     };
-    let pile_style = move || {
-        let n = staged.get().len();
-        // Card is 9.5rem (~152px) wide. Each card fans right+down by a
-        // cumulative offset (see `fan_offset`); reserve room for the widest
-        // fan plus a little hover-lift headroom so nothing clips.
-        let last = n.saturating_sub(1);
-        let (ex, ey) = fan_offset(last);
-        format!(
-            "width: calc(9.5rem + {ex}px); min-height: calc(9.5rem + {ey}px);",
-            ey = ey + 36.0,
-        )
-    };
     view! {
         <div
             class="drop-zone rounded-3xl p-4 sm:p-5 bg-white/5 border-2 border-dashed border-surface"
@@ -471,11 +447,11 @@ fn PolaroidGrid(
             on:dragleave=move |ev: DragEvent| { ev.prevent_default(); dragging.set(false); }
             on:drop=on_drop.clone()
         >
-            <div class="flex flex-wrap gap-5 justify-center sm:justify-start items-start">
-                // Stacked deck of staged polaroids: a relatively-positioned
-                // "pile" whose cards are absolutely positioned + offset/rotated
-                // by index so they overlap like a corkboard stack.
-                <div class="relative" style=pile_style>
+            // Overlapping fan of classic white instant-photos: each card after
+            // the first slides LEFT over the previous and tilts a touch, so the
+            // photos lay across each other and stay all-visible (newest on top).
+            // Hovering a card lifts it clear so the ones beneath are reachable.
+            <div class="staged-fan">
                 <For
                     each=pile_items
                     key=|(_, f)| f.id.clone()
@@ -484,86 +460,56 @@ fn PolaroidGrid(
                         let remove = remove.clone();
                         let click_remove = move |_| remove(id_for_remove.clone());
                         let is_video = f.mime.starts_with("video/");
-                        // Deterministic fan from the index: each card shifts
-                        // right/down enough that every polaroid clearly peeks
-                        // out from under the one on top of it. Later cards stack
-                        // on top (higher z-index) so the newest is fully visible
-                        // and earlier ones fan out beneath like a corkboard pile.
-                        let (dx, dy) = fan_offset(i);
-                        // Cycle of tasteful tilts, capped to [-6, 6] deg.
-                        let tilts = [-6.0_f64, 4.0, -3.0, 6.0, -4.0, 3.0];
+                        let tilts = [-5.0_f64, 3.0, -2.0, 5.0, -3.0, 2.0];
                         let rot = tilts[i % tilts.len()];
+                        let ml = if i == 0 { 0.0 } else { -2.6 };
                         let z = i + 1;
-                        let base_style = format!(
-                            "position:absolute; top:0; left:0; width:9.5rem; \
-                             z-index:{z}; \
-                             transform: translate({dx}px, {dy}px) rotate({rot}deg); \
-                             transform-origin: center bottom; \
-                             transition: transform .18s ease, z-index 0s;",
+                        let rest = format!(
+                            "margin-left:{ml}rem; z-index:{z}; transform: rotate({rot}deg); \
+                             transition: transform .2s cubic-bezier(.22,1,.36,1);",
                         );
-                        // On hover, lift the card up and out of the pile and pop
-                        // it to the very top so lower cards become reachable.
-                        let hover_style = format!(
-                            "position:absolute; top:0; left:0; width:9.5rem; \
-                             z-index:999; \
-                             transform: translate({dx}px, {ly}px) rotate(0deg) scale(1.04); \
-                             transform-origin: center bottom; \
-                             transition: transform .18s ease, z-index 0s;",
-                            ly = dy - 22.0,
+                        let hover = format!(
+                            "margin-left:{ml}rem; z-index:999; \
+                             transform: rotate(0deg) translateY(-12px) scale(1.06); \
+                             transition: transform .2s cubic-bezier(.22,1,.36,1);",
                         );
                         let hovered = RwSignal::new(false);
                         view! {
                             <div
-                                class="win-frame pop-in"
-                                style=move || if hovered.get() { hover_style.clone() } else { base_style.clone() }
+                                class="animate-fade-in"
+                                style=move || if hovered.get() { hover.clone() } else { rest.clone() }
                                 on:mouseenter=move |_| hovered.set(true)
                                 on:mouseleave=move |_| hovered.set(false)
                             >
-                                <div class="win-media relative w-full aspect-square bg-slate-900">
-                                    {if is_video {
-                                        view! {
-                                            <video
-                                                src=f.preview_url.clone()
-                                                muted=true
-                                            />
-                                        }.into_any()
-                                    } else {
-                                        view! {
-                                            <img
-                                                src=f.preview_url.clone()
-                                                alt=f.name.clone()
-                                            />
-                                        }.into_any()
-                                    }}
-                                    <button
-                                        type="button"
-                                        on:click=click_remove
-                                        class="absolute top-1.5 right-1.5 z-10 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/65 text-white hover:bg-rose-500 backdrop-blur-sm transition-colors"
-                                        aria-label="Remove"
-                                        title="Remove"
-                                    >
-                                        <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                            <path d="M18 6 6 18M6 6l12 12" />
-                                        </svg>
-                                    </button>
-                                    {if is_video {
-                                        view! {
-                                            <span class="pointer-events-none absolute bottom-1.5 left-1.5 z-10 inline-flex items-center gap-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] text-white">
-                                                <svg viewBox="0 0 24 24" class="h-2.5 w-2.5" fill="currentColor"><path d="M5 4l14 8-14 8z" /></svg>
-                                                "Video"
-                                            </span>
-                                        }.into_any()
-                                    } else { view! { <></> }.into_any() }}
+                                <div class="staged-polaroid">
+                                    <div class="staged-photo">
+                                        {if is_video {
+                                            view! { <video src=f.preview_url.clone() muted=true /> }.into_any()
+                                        } else {
+                                            view! { <img src=f.preview_url.clone() alt=f.name.clone() /> }.into_any()
+                                        }}
+                                        <button
+                                            type="button"
+                                            on:click=click_remove
+                                            class="absolute top-1 right-1 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white hover:bg-rose-500 backdrop-blur-sm transition-colors"
+                                            aria-label="Remove"
+                                            title="Remove"
+                                        >
+                                            <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+                                        </button>
+                                        {if is_video {
+                                            view! { <span class="pointer-events-none absolute bottom-1 left-1 z-10 inline-flex items-center gap-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] text-white"><svg viewBox="0 0 24 24" class="h-2.5 w-2.5" fill="currentColor"><path d="M5 4l14 8-14 8z" /></svg>"Video"</span> }.into_any()
+                                        } else { view! { <></> }.into_any() }}
+                                    </div>
                                 </div>
                             </div>
                         }
                     }
                 />
-                </div>
 
-                // "Add more" tile, kept beside the deck.
-                <label class="cursor-pointer flex flex-col items-center justify-center w-[9.5rem] h-[9.5rem] rounded-2xl border-2 border-dashed border-surface bg-white/5 hover:bg-white/10 transition-colors text-muted hover:text-accent">
-                    <svg viewBox="0 0 24 24" class="h-8 w-8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                // "Add more" tile at the end of the fan.
+                <label class="staged-addmore cursor-pointer flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-surface bg-white/5 hover:bg-white/10 transition-colors text-muted hover:text-accent">
+                    <svg viewBox="0 0 24 24" class="h-7 w-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M12 5v14M5 12h14" />
                     </svg>
                     <span class="mt-1 text-xs font-semibold">"Add more"</span>

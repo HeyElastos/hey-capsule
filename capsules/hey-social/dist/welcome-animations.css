@@ -597,3 +597,50 @@ html.light .drop-zone--dragging {
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Staged-photo fan (upload preview) ─────────────────────────────
+   Classic white instant-photo frames in an overlapping fan so the
+   staged photos lay across each other and stay all-visible. The fan
+   transform (margin-left / rotate / z-index) is set inline per card in
+   posts.rs; these classes own the frame + photo sizing (real classes so
+   nothing is inert against the prebuilt styles.css). */
+.staged-fan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: center;
+  row-gap: 1.25rem;
+  padding: 0.5rem 0;
+}
+.staged-polaroid {
+  background: #ffffff;
+  padding: 6px 6px 20px;
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(2, 6, 23, 0.45);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+}
+.staged-photo {
+  position: relative;
+  width: 7rem;
+  height: 7rem;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #e2e8f0;
+}
+.staged-photo > img,
+.staged-photo > video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.staged-addmore {
+  flex: none;
+  width: 7rem;
+  height: 8.5rem;
+  margin-left: 1.25rem;
+}
+@media (min-width: 640px) {
+  .staged-photo { width: 8rem; height: 8rem; }
+  .staged-addmore { width: 8rem; height: 9.5rem; }
+}
