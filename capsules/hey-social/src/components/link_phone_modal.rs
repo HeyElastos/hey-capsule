@@ -8,6 +8,7 @@
 // renderer as the DID / invite QRs.
 
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 
 use crate::api::dms::invite_qr_svg;
 use crate::components::Modal;
@@ -15,10 +16,23 @@ use crate::runtime::device_link_url;
 
 #[component]
 pub fn LinkPhoneModal(open: RwSignal<bool>) -> impl IntoView {
+    // Auto-rotate the QR every 60s so the on-screen code stays fresh — the
+    // device-link token self-expires (~120s), so a stale screenshot lapses.
+    let tick = RwSignal::new(0u32);
+    Effect::new(move |_| {
+        spawn_local(async move {
+            loop {
+                crate::runtime::sleep_ms(60_000).await;
+                tick.update(|t| *t += 1);
+            }
+        });
+    });
     view! {
         <Modal open=open>
             {move || {
-                // Recompute on each open so the QR always carries the live token.
+                // Recompute on each open + rotation so the QR always carries a
+                // live, short-lived token.
+                tick.get();
                 let svg = device_link_url("hey-social").and_then(|link| invite_qr_svg(&link));
                 view! {
                     <div class="frosted-card frosted-card-strong p-6 space-y-4 text-center">
@@ -51,7 +65,7 @@ pub fn LinkPhoneModal(open: RwSignal<bool>) -> impl IntoView {
                         }}
 
                         <p class="text-xs text-muted">
-                            "Open Hey on your phone and scan this. It signs you in with no password — your phone borrows this device's wallet session."
+                            "Open Hey on your phone and scan this — no password; your phone borrows this device's wallet session. The code refreshes every minute and expires shortly after, so scan it now and don't share a screenshot."
                         </p>
 
                         <button

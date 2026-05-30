@@ -25,7 +25,7 @@
 
 #![allow(dead_code)]
 
-use base64::engine::general_purpose::STANDARD as B64;
+use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
 use gloo_storage::{SessionStorage, Storage as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -81,7 +81,62 @@ pub fn api_url(path: &str) -> String {
     format!("{}{}", api_base(), path)
 }
 
+// ── Device-link QR token (short-lived, self-expiring) ────────────────────────
+//
+// The Link-phone QR must NOT embed the desktop's raw Home launch token forever —
+// a screenshot would be a permanent bearer credential. So `device_link_url`
+// wraps the raw token in a `dl1.<url-safe-base64({t,exp,jti})>` envelope with a
+// short TTL; the redeem side (`home_launch_token` → `resolve_device_link_token`)
+// refuses it once `exp` passes, and the modal auto-rotates the on-screen QR so
+// the live code is always fresh.
+//
+// HONESTY: this is *honest-client* expiry — it stops the QR being redeemed
+// through the app after it lapses, but it is NOT server-enforced single-use. A
+// determined attacker who base64-decodes the envelope still holds the inner
+// token until Home revokes the session. Hard single-use needs the runtime to
+// consume `jti` exactly once at /session/start — a follow-up fork patch.
+const DEVICE_LINK_PREFIX: &str = "dl1.";
+const DEVICE_LINK_TTL_MS: i64 = 120_000;
+
+fn dl_now_ms() -> i64 {
+    js_sys::Date::now() as i64
+}
+
+/// Wrap a raw launch token into a short-lived device-link envelope for a QR.
+fn make_device_link_token(raw: &str) -> String {
+    use base64::Engine;
+    let now = dl_now_ms();
+    let body = json!({ "t": raw, "exp": now + DEVICE_LINK_TTL_MS, "jti": now });
+    let bytes = serde_json::to_vec(&body).unwrap_or_default();
+    format!("{DEVICE_LINK_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// Resolve a possibly device-link-wrapped token to the raw runtime token. A
+/// plain token passes through unchanged; a `dl1.…` envelope is decoded and
+/// expiry-checked — `Err(())` means "expired or malformed, do not redeem".
+fn resolve_device_link_token(tok: &str) -> Result<String, ()> {
+    use base64::Engine;
+    let Some(b64) = tok.strip_prefix(DEVICE_LINK_PREFIX) else {
+        return Ok(tok.to_string());
+    };
+    let bytes = URL_SAFE_NO_PAD.decode(b64).map_err(|_| ())?;
+    let v: Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    if dl_now_ms() > v.get("exp").and_then(|e| e.as_i64()).unwrap_or(0) {
+        return Err(()); // link expired
+    }
+    v.get("t").and_then(|t| t.as_str()).map(String::from).ok_or(())
+}
+
+/// The effective Home launch token for THIS load, with any device-link envelope
+/// resolved to the raw runtime token. None if absent OR an envelope has expired
+/// (so a stale Link-phone QR won't redeem).
 pub fn home_launch_token() -> Option<String> {
+    resolve_device_link_token(&home_launch_token_raw()?).ok()
+}
+
+/// Raw stored/URL launch token (may be a `dl1.…` device-link envelope on a phone
+/// that arrived via a Link-phone QR). Callers should prefer `home_launch_token()`.
+fn home_launch_token_raw() -> Option<String> {
     let url_tok = read_url_token();
     if let Ok(Some(prev)) =
         SessionStorage::get::<Option<String>>(crate::ctx::home_launch_token_key())
@@ -124,7 +179,9 @@ fn read_url_token() -> Option<String> {
 /// wallet-authorized session with no separate sign-in and no key on the phone.
 /// Returns None when there is no launch token yet (i.e. not signed in via Home).
 pub fn device_link_url(app: &str) -> Option<String> {
-    let token = home_launch_token()?;
+    // Wrap the raw token in a short-lived, self-expiring envelope (NOT the bare
+    // launch token) so a screenshot of the QR stops working once it lapses.
+    let token = make_device_link_token(&home_launch_token()?);
     let origin = window().location().origin().ok()?;
     let base = format!("{origin}{}", api_base());
     let enc = |s: &str| String::from(js_sys::encode_uri_component(s));

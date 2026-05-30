@@ -743,6 +743,17 @@ fn Composer(
 // via device_link_url; rendered with the shared invite_qr_svg.
 #[component]
 fn LinkPhoneModal(open: RwSignal<bool>) -> impl IntoView {
+    // Auto-rotate the QR every 60s so the on-screen code stays fresh — the
+    // device-link token self-expires (~120s), so a stale screenshot lapses.
+    let tick = RwSignal::new(0u32);
+    Effect::new(move |_| {
+        spawn_local(async move {
+            loop {
+                wait_ms(60_000).await;
+                tick.update(|t| *t += 1);
+            }
+        });
+    });
     view! {
         <Show when=move || open.get() fallback=|| view! { <></> }>
             <div class="msgr-modal-backdrop" on:click=move |_: MouseEvent| open.set(false)>
@@ -762,6 +773,7 @@ fn LinkPhoneModal(open: RwSignal<bool>) -> impl IntoView {
                     </header>
                     <div class="msgr-modal-body" style="text-align:center">
                         {move || {
+                            tick.get();
                             match device_link_url("hey-chat").and_then(|l| invite_qr_svg(&l)) {
                                 Some(svg) => view! {
                                     <div
@@ -775,7 +787,7 @@ fn LinkPhoneModal(open: RwSignal<bool>) -> impl IntoView {
                             }
                         }}
                         <p class="msgr-modal-hint">
-                            "Open Hey on your phone and scan this — it signs in with no password."
+                            "Open Hey on your phone and scan this — no password. The code refreshes every minute and expires shortly after, so scan it now and don't share a screenshot."
                         </p>
                     </div>
                 </div>
