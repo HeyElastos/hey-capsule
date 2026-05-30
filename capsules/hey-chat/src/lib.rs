@@ -8,11 +8,12 @@ use leptos_router::path;
 use leptos_router::NavigateOptions;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Event, HtmlInputElement, HtmlTextAreaElement, KeyboardEvent, MouseEvent};
+use web_sys::{Blob, Event, File, HtmlInputElement, HtmlTextAreaElement, KeyboardEvent, MouseEvent, Url};
 
 use hey_core::api::dms::{
-    accept_invite, generate_invite, list_contacts, mark_read, read_conversation, send_message,
-    DmContact, DmMessage, IdentityMode,
+    accept_invite, fetch_attachment, generate_invite, list_contacts, mark_read, read_conversation,
+    send_message, send_message_with_attachments, upload_attachment, Attachment, DmContact,
+    DmMessage, IdentityMode,
 };
 use hey_core::passkey::{passkey_supported, sign_in_via_runtime};
 use hey_core::session;
@@ -396,11 +397,98 @@ fn ChatList(active_did: Signal<String>) -> impl IntoView {
     }
 }
 
+// ── Attachments (M7) ──────────────────────────────────────────────────────
+
+/// A file the user picked but hasn't sent yet (raw plaintext bytes, held in
+/// memory until send encrypts + uploads it).
+#[derive(Clone)]
+struct PendingAttachment {
+    name: String,
+    mime: String,
+    bytes: Vec<u8>,
+}
+
+/// Read a picked `File`'s bytes (async, via Blob::array_buffer through Deref).
+async fn read_file_bytes(file: &File) -> Result<Vec<u8>, String> {
+    let buf = JsFuture::from(file.array_buffer())
+        .await
+        .map_err(|_| "could not read file".to_string())?;
+    Ok(js_sys::Uint8Array::new(&buf).to_vec())
+}
+
+/// Wrap decrypted bytes in a `blob:` object URL for `<img>` / `<a download>`.
+fn bytes_to_object_url(bytes: &[u8], mime: &str) -> Result<String, String> {
+    let arr = js_sys::Uint8Array::from(bytes);
+    let parts = js_sys::Array::new();
+    parts.push(&arr);
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type(mime);
+    let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &opts)
+        .map_err(|_| "blob create failed".to_string())?;
+    Url::create_object_url_with_blob(&blob).map_err(|_| "object url failed".to_string())
+}
+
+/// Render one received/sent attachment: fetch the ciphertext from the content
+/// store, decrypt it E2E (the per-file key rode inside the sealed message), and
+/// show it inline (images) or as a download chip (everything else). The blob
+/// URL is revoked on unmount.
+#[component]
+fn AttachmentView(att: Attachment) -> impl IntoView {
+    let url = RwSignal::new(Option::<String>::None);
+    let failed = RwSignal::new(false);
+    let is_image = att.mime.starts_with("image/");
+    let name = att.name.clone();
+    {
+        let att = att.clone();
+        Effect::new(move |_| {
+            let att = att.clone();
+            spawn_local(async move {
+                match fetch_attachment(&att).await {
+                    Ok(bytes) => match bytes_to_object_url(&bytes, &att.mime) {
+                        Ok(u) => url.set(Some(u)),
+                        Err(_) => failed.set(true),
+                    },
+                    Err(_) => failed.set(true),
+                }
+            });
+        });
+    }
+    on_cleanup(move || {
+        if let Some(u) = url.get_untracked() {
+            let _ = Url::revoke_object_url(&u);
+        }
+    });
+    view! {
+        <div class="msgr-att">
+            {move || {
+                if failed.get() {
+                    view! { <span class="msgr-att-failed">"⚠️ attachment unavailable"</span> }
+                        .into_any()
+                } else if let Some(u) = url.get() {
+                    if is_image {
+                        view! { <img class="msgr-att-img" src=u alt=name.clone() /> }.into_any()
+                    } else {
+                        view! {
+                            <a class="msgr-att-file" href=u download=name.clone()>
+                                "📎 "{name.clone()}
+                            </a>
+                        }
+                        .into_any()
+                    }
+                } else {
+                    view! { <span class="msgr-att-loading">"📎 …"</span> }.into_any()
+                }
+            }}
+        </div>
+    }
+}
+
 // ── Conversation ─────────────────────────────────────────────────────────
 #[component]
 fn Conversation(did: String) -> impl IntoView {
     let messages: RwSignal<Vec<DmMessage>> = RwSignal::new(Vec::new());
     let composer = RwSignal::new(String::new());
+    let pending: RwSignal<Vec<PendingAttachment>> = RwSignal::new(Vec::new());
     let busy = RwSignal::new(false);
 
     // Load the conversation when the :did param changes + mark read on open.
@@ -440,16 +528,33 @@ fn Conversation(did: String) -> impl IntoView {
                 return;
             }
             let text = composer.get();
-            if text.trim().is_empty() {
+            let files = pending.get();
+            // Allow send when there's text OR at least one picked file.
+            if text.trim().is_empty() && files.is_empty() {
                 return;
             }
             let did = did.clone();
             busy.set(true);
             spawn_local(async move {
-                // Optimistic: clear the input immediately, then refresh from
-                // the engine (which appends the sent message).
+                // Optimistic: clear input + pending immediately, then refresh
+                // from the engine (which appends the sent message).
                 composer.set(String::new());
-                let _ = send_message(&did, &text).await;
+                pending.set(Vec::new());
+                if files.is_empty() {
+                    let _ = send_message(&did, &text).await;
+                } else {
+                    // Encrypt + upload each file, then send the refs E2E-sealed.
+                    let mut atts = Vec::new();
+                    for f in &files {
+                        match upload_attachment(&f.name, &f.mime, &f.bytes).await {
+                            Ok(a) => atts.push(a),
+                            Err(e) => web_sys::console::warn_1(
+                                &format!("[hey-chat] attachment upload failed: {e}").into(),
+                            ),
+                        }
+                    }
+                    let _ = send_message_with_attachments(&did, &text, atts).await;
+                }
                 let updated = read_conversation(&did).await;
                 messages.set(updated);
                 busy.set(false);
@@ -488,7 +593,7 @@ fn Conversation(did: String) -> impl IntoView {
                 }}
             </div>
 
-            <Composer composer=composer busy=busy send=send.clone() />
+            <Composer composer=composer pending=pending busy=busy send=send.clone() />
         </div>
     }
 }
@@ -499,10 +604,17 @@ fn Bubble(m: DmMessage) -> impl IntoView {
     let bubble_class = if m.mine { "msgr-bubble msgr-bubble-mine" } else { "msgr-bubble" };
     let ts_text = ts_short(m.ts);
     let lock = if m.encrypted { "🔒" } else { "!" };
+    let has_text = !m.text.is_empty();
+    let text = m.text.clone();
+    let attachments = m.attachments.clone();
     view! {
         <div class=row_class>
             <div class=bubble_class>
-                <p class="msgr-bubble-text">{m.text}</p>
+                {attachments
+                    .into_iter()
+                    .map(|a| view! { <AttachmentView att=a /> })
+                    .collect_view()}
+                {has_text.then(|| view! { <p class="msgr-bubble-text">{text}</p> })}
                 <span class="msgr-bubble-meta">
                     {ts_text}" "<span class="msgr-bubble-lock">{lock}</span>
                 </span>
@@ -515,6 +627,7 @@ fn Bubble(m: DmMessage) -> impl IntoView {
 #[component]
 fn Composer(
     composer: RwSignal<String>,
+    pending: RwSignal<Vec<PendingAttachment>>,
     busy: RwSignal<bool>,
     send: impl Fn() + 'static + Clone,
 ) -> impl IntoView {
@@ -525,40 +638,119 @@ fn Composer(
             }
         }
     };
+    // Picking files: read each selected file's bytes into `pending` (held in
+    // memory; encryption + upload happen on send). Reset the input so the same
+    // file can be re-picked.
+    let on_file = move |ev: Event| {
+        let Some(t) = ev.target() else { return };
+        let Ok(input) = t.dyn_into::<HtmlInputElement>() else { return };
+        if let Some(files) = input.files() {
+            for i in 0..files.length() {
+                if let Some(file) = files.item(i) {
+                    let name = file.name();
+                    let raw_mime = file.type_();
+                    let mime = if raw_mime.is_empty() {
+                        "application/octet-stream".to_string()
+                    } else {
+                        raw_mime
+                    };
+                    spawn_local(async move {
+                        if let Ok(bytes) = read_file_bytes(&file).await {
+                            pending.update(|p| p.push(PendingAttachment { name, mime, bytes }));
+                        }
+                    });
+                }
+            }
+        }
+        input.set_value("");
+    };
     view! {
-        <div class="msgr-composer">
-            <textarea
-                class="msgr-composer-input"
-                rows="1"
-                placeholder="Write a message…"
-                prop:value=move || composer.get()
-                on:input=on_input
-                on:keydown={
-                    let send = send.clone();
-                    move |ev: KeyboardEvent| {
-                        // Enter sends; Shift+Enter inserts a newline.
-                        if ev.key() == "Enter" && !ev.shift_key() {
-                            ev.prevent_default();
-                            send();
+        <div class="msgr-composer-wrap">
+            {move || {
+                let items = pending.get();
+                if items.is_empty() {
+                    ().into_any()
+                } else {
+                    view! {
+                        <div class="msgr-pending">
+                            {items
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, f)| {
+                                    view! {
+                                        <span class="msgr-pending-chip">
+                                            "📎 "{f.name}
+                                            <button
+                                                type="button"
+                                                class="msgr-pending-x"
+                                                aria-label="Remove attachment"
+                                                on:click=move |_| {
+                                                    pending
+                                                        .update(|p| {
+                                                            if i < p.len() {
+                                                                p.remove(i);
+                                                            }
+                                                        })
+                                                }
+                                            >
+                                                "×"
+                                            </button>
+                                        </span>
+                                    }
+                                })
+                                .collect_view()}
+                        </div>
+                    }
+                        .into_any()
+                }
+            }}
+            <div class="msgr-composer">
+                <label class="msgr-attach-btn" aria-label="Attach file" title="Attach file">
+                    <svg viewBox="0 0 24 24" class="msgr-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                    </svg>
+                    <input
+                        type="file"
+                        multiple
+                        style="display:none"
+                        on:change=on_file
+                    />
+                </label>
+                <textarea
+                    class="msgr-composer-input"
+                    rows="1"
+                    placeholder="Write a message…"
+                    prop:value=move || composer.get()
+                    on:input=on_input
+                    on:keydown={
+                        let send = send.clone();
+                        move |ev: KeyboardEvent| {
+                            // Enter sends; Shift+Enter inserts a newline.
+                            if ev.key() == "Enter" && !ev.shift_key() {
+                                ev.prevent_default();
+                                send();
+                            }
                         }
                     }
-                }
-            ></textarea>
-            <button
-                type="button"
-                class="msgr-send-btn"
-                aria-label="Send"
-                on:click={
-                    let send = send.clone();
-                    move |_| send()
-                }
-                prop:disabled=move || busy.get() || composer.get().trim().is_empty()
-            >
-                <svg viewBox="0 0 24 24" class="msgr-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="m22 2-7 20-4-9-9-4Z" />
-                    <path d="M22 2 11 13" />
-                </svg>
-            </button>
+                ></textarea>
+                <button
+                    type="button"
+                    class="msgr-send-btn"
+                    aria-label="Send"
+                    on:click={
+                        let send = send.clone();
+                        move |_| send()
+                    }
+                    prop:disabled=move || {
+                        busy.get() || (composer.get().trim().is_empty() && pending.get().is_empty())
+                    }
+                >
+                    <svg viewBox="0 0 24 24" class="msgr-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m22 2-7 20-4-9-9-4Z" />
+                        <path d="M22 2 11 13" />
+                    </svg>
+                </button>
+            </div>
         </div>
     }
 }

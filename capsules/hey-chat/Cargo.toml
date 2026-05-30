@@ -41,4 +41,10 @@ features = [
   "Clipboard",
   "Storage",
   "console",
+  # M7 attachments: pick files + render decrypted bytes as blob: URLs.
+  "File",
+  "FileList",
+  "Blob",
+  "BlobPropertyBag",
+  "Url",
 ]

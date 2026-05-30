@@ -566,14 +566,113 @@ html.light .msgr-avatar {
 }
 
 /* ── Composer ────────────────────────────────────────────────────────── */
-.msgr-composer {
+.msgr-composer-wrap {
   flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--msgr-panel);
+  border-top: 1px solid var(--msgr-divider);
+}
+
+.msgr-composer {
   display: flex;
   align-items: flex-end;
   gap: 10px;
   padding: 12px 16px;
-  background: var(--msgr-panel);
-  border-top: 1px solid var(--msgr-divider);
+}
+
+/* Attach button (paperclip) — matches the send button's circular footprint. */
+.msgr-attach-btn {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--msgr-text-muted);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.msgr-attach-btn:hover {
+  background: var(--msgr-input-bg);
+  color: var(--msgr-text);
+}
+
+/* Pending (picked-but-not-sent) file chips, shown above the input. */
+.msgr-pending {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+}
+
+.msgr-pending-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  background: var(--msgr-input-bg);
+  color: var(--msgr-text);
+  border: 1px solid var(--msgr-border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msgr-pending-x {
+  appearance: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--msgr-text-muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.msgr-pending-x:hover {
+  color: var(--msgr-text);
+}
+
+/* Rendered attachments inside a message bubble. */
+.msgr-att {
+  margin-bottom: 6px;
+}
+
+.msgr-att-img {
+  display: block;
+  max-width: 260px;
+  max-height: 320px;
+  border-radius: 12px;
+  object-fit: cover;
+}
+
+.msgr-att-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  text-decoration: none;
+  background: var(--msgr-input-bg);
+  color: var(--msgr-text);
+  border: 1px solid var(--msgr-border);
+}
+
+.msgr-att-file:hover {
+  border-color: var(--msgr-accent);
+}
+
+.msgr-att-loading,
+.msgr-att-failed {
+  font-size: 12px;
+  color: var(--msgr-text-muted);
 }
 
 .msgr-composer-input {
