@@ -108,9 +108,15 @@ fn bytes_to_sign(event_type: &str, payload: &Value, sender_did: &str, ts: i64) -
 }
 
 // Construct a signed envelope from the user's auth-key hex + event body.
-// Caller (api/posts.rs etc.) is responsible for unwrapping session::current()
-// first so this stays a pure function.
-pub fn create_signed_event(
+//
+// Two signing paths (mirrors the DM `sign_bytes` split, so feed + chat sign the
+// SAME way): a PROVIDER-BACKED session (empty `auth_key_hex`) asks the runtime
+// identity provider to sign — no passkey tap, no seed in the browser, the
+// wallet model; a LOCAL session derives the key from the seed and signs here.
+// The canonicalized bytes + signature are byte-identical across both paths, so
+// verification interop is preserved. Promoted from hey-social so the shared
+// engine carries the no-tap signing for every app (events.rs migration).
+pub async fn create_signed_event(
     event_type: &str,
     payload: Value,
     auth_key_hex: &str,
@@ -118,6 +124,38 @@ pub fn create_signed_event(
     if event_type.is_empty() {
         return Err("event.type is required".into());
     }
+    // Provider-backed session (empty seed): the runtime holds the key and signs.
+    // sender_did comes from the adopted session (we can't derive it without the
+    // seed).
+    if auth_key_hex.is_empty() {
+        let sender_did = crate::session::current()
+            .map(|s| s.did_key)
+            .filter(|d| d.starts_with("did:key:z"))
+            .ok_or_else(|| "provider-backed event: no session did:key".to_string())?;
+        let ts = (js_sys::Date::now() as i64).max(0);
+        let message = bytes_to_sign(event_type, &payload, &sender_did, ts);
+        let resp = crate::runtime::identity_provider::sign(
+            crate::runtime::identity_provider::HEY_NAMESPACE,
+            message.as_bytes(),
+        )
+        .await
+        .map_err(|e| format!("provider sign: {e}"))?;
+        let d = resp.get("data").unwrap_or(&resp);
+        let signature = d
+            .get("signature_hex")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "provider sign: no signature_hex".to_string())?
+            .to_string();
+        return Ok(SignedEvent {
+            event_type: event_type.into(),
+            payload,
+            sender_did,
+            ts,
+            signature,
+        });
+    }
+
+    // Local-seed path (unchanged): derive the key from the seed and sign here.
     let seed_vec = hex_to_bytes(auth_key_hex)?;
     if seed_vec.len() != 32 {
         return Err("auth_key must be 32 bytes (64 hex chars)".into());
