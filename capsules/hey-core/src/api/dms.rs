@@ -840,10 +840,16 @@ pub fn encode_invite_link(invite: &InviteLink) -> String {
 pub fn invite_qr_svg(token: &str) -> Option<String> {
     use qrcode::render::svg;
     use qrcode::{EcLevel, QrCode};
-    let code = QrCode::with_error_correction_level(token.as_bytes(), EcLevel::M).ok()?;
+    // EcLevel::L (not M) + a larger min size: the device-link payload is ~1 KB
+    // (heyapp:// + the dl1. envelope), which lands around QR version 25. At the
+    // old 220px that was ~1.9px/module — below the ~2.5px a phone camera needs,
+    // so the QR wouldn't scan. L drops a few versions and 360px restores
+    // ~3px/module. Harmless for the shorter DID / invite QRs (they just render
+    // at a low version, big and crisp).
+    let code = QrCode::with_error_correction_level(token.as_bytes(), EcLevel::L).ok()?;
     Some(
         code.render::<svg::Color<'_>>()
-            .min_dimensions(220, 220)
+            .min_dimensions(360, 360)
             .dark_color(svg::Color("#0a0a0a"))
             .light_color(svg::Color("#ffffff"))
             .build(),

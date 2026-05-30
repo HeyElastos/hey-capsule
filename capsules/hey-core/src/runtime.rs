@@ -96,7 +96,12 @@ pub fn api_url(path: &str) -> String {
 // token until Home revokes the session. Hard single-use needs the runtime to
 // consume `jti` exactly once at /session/start — a follow-up fork patch.
 const DEVICE_LINK_PREFIX: &str = "dl1.";
-const DEVICE_LINK_TTL_MS: i64 = 120_000;
+const DEVICE_LINK_TTL_MS: i64 = 300_000;
+/// Clock-skew grace. The phone checks `exp` against ITS OWN wall clock, which can
+/// run ahead of the desktop that stamped the token — without leeway a fresh QR
+/// gets rejected as "expired" on a slightly-fast phone (which silently lands the
+/// phone logged-out). Tolerate this much skew on the redeem side.
+const DEVICE_LINK_SKEW_MS: i64 = 120_000;
 
 fn dl_now_ms() -> i64 {
     js_sys::Date::now() as i64
@@ -121,8 +126,8 @@ fn resolve_device_link_token(tok: &str) -> Result<String, ()> {
     };
     let bytes = URL_SAFE_NO_PAD.decode(b64).map_err(|_| ())?;
     let v: Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
-    if dl_now_ms() > v.get("exp").and_then(|e| e.as_i64()).unwrap_or(0) {
-        return Err(()); // link expired
+    if dl_now_ms() > v.get("exp").and_then(|e| e.as_i64()).unwrap_or(0) + DEVICE_LINK_SKEW_MS {
+        return Err(()); // link expired (past TTL + clock-skew grace)
     }
     v.get("t").and_then(|t| t.as_str()).map(String::from).ok_or(())
 }
