@@ -11,7 +11,6 @@ use web_sys::{DragEvent, Event, FileList, HtmlInputElement, Url};
 
 use crate::api::posts::{create_post, ipfs_upload_media, CreatePostArgs, MediaTile};
 use crate::components::icons::{CameraIcon, ImageIcon};
-use crate::components::{FloatingDock, TopHeader};
 
 #[derive(Clone)]
 struct StagedFile {
@@ -155,11 +154,6 @@ pub fn Posts() -> impl IntoView {
 
     view! {
         <>
-            // Chrome stays as bare page-root siblings — never wrapped in the
-            // .page-enter transform below, which would re-anchor the fixed
-            // FloatingDock to the transformed box.
-            <TopHeader />
-            <FloatingDock />
             <div class="page-enter relative mx-auto max-w-3xl pl-24 pr-3 py-6 sm:pl-28 sm:pr-6 sm:py-10 overflow-hidden">
 
                 // ── Hero ──────────────────────────────────────────

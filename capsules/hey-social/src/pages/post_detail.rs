@@ -6,7 +6,7 @@ use leptos::task::spawn_local;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::posts::{get_post, Post};
-use crate::components::{FloatingDock, PostCard, TopHeader};
+use crate::components::PostCard;
 
 #[component]
 pub fn PostDetail() -> impl IntoView {
@@ -41,10 +41,6 @@ pub fn PostDetail() -> impl IntoView {
 
     view! {
         <>
-            // Chrome stays a bare page-root sibling, outside the .page-enter
-            // transform, so the fixed dock isn't re-anchored.
-            <TopHeader />
-            <FloatingDock />
             <div class="page-enter mx-auto max-w-2xl space-y-4 pl-24 pr-3 py-6 sm:pl-28 sm:pr-6 sm:py-10">
                 {move || {
                     if loading.get() {

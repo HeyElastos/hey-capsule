@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::{Route, Router, Routes};
+use leptos_router::hooks::use_location;
 use leptos_router::path;
 
 pub mod api;
@@ -99,6 +100,10 @@ pub fn App() -> impl IntoView {
     view! {
         <Router base=base>
             <main class="min-h-screen text-primary">
+                // App-level chrome — rendered ONCE here (inside the Router) so the
+                // sticky header + fixed dock PERSIST across navigations instead of
+                // re-mounting per page (the env-switch "hard reload" flash).
+                <AppChrome />
                 <Routes fallback=|| view! { <pages::NotFound /> }>
                     <Route path=path!("/") view=pages::Home />
                     <Route path=path!("/videos") view=pages::Clips />
@@ -126,5 +131,27 @@ pub fn App() -> impl IntoView {
                 <components::NewGroupModal open=modals.new_group_open />
             </main>
         </Router>
+    }
+}
+
+/// Sticky header + fixed dock, rendered ONCE at the App level (inside the
+/// Router) so they never re-mount on navigation — that per-page re-mount was
+/// the env-switch "hard reload" flash. Shown only on signed-in app routes;
+/// hidden on the full-screen auth/onboarding routes and when signed out.
+/// `<Show>` re-renders only when the gate boolean flips (not on every path
+/// change), so the chrome stays mounted while you move between app routes.
+#[component]
+fn AppChrome() -> impl IntoView {
+    let location = use_location();
+    let show = move || {
+        let p = location.pathname.get();
+        crate::session::current().is_some()
+            && !matches!(p.as_str(), "/signin" | "/signup" | "/onboarding" | "/welcome")
+    };
+    view! {
+        <Show when=show fallback=|| view! { <></> }>
+            <components::TopHeader />
+            <components::FloatingDock />
+        </Show>
     }
 }

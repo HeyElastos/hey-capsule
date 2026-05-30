@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use crate::api::posts::{get_posts, Post};
 use crate::components::icons::CameraIcon;
-use crate::components::{FloatingDock, NavLink, PostCard, TopHeader};
+use crate::components::{NavLink, PostCard};
 use crate::pages::landing::Landing;
 use crate::session;
 
@@ -76,8 +76,6 @@ pub fn Home() -> impl IntoView {
         // so entering the photo feed is smooth: no zoom/resize, no flash, no
         // dock trap. Identical pattern to posts/profile/clips/post_detail.
         <>
-        <TopHeader />
-        <FloatingDock />
         <div class="page-enter mx-auto max-w-2xl space-y-6 pl-24 pr-3 py-6 sm:pl-28 sm:pr-6 sm:py-10">
                 {move || if loading.get() {
                     view! { <FeedSkeleton /> }.into_any()

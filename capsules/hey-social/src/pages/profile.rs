@@ -21,7 +21,8 @@ use crate::api::profile::{
     ensure_profile, follow_user, is_following, unfollow_user, update_profile, upload_avatar,
     Profile as ProfileRecord, ProfileUpdate,
 };
-use crate::components::{FloatingDock, Modal, NavLink, TopHeader};
+use crate::components::icons::{CommentIcon, HeartIcon};
+use crate::components::{Modal, NavLink};
 use crate::runtime::ipfs;
 use crate::session;
 
@@ -217,11 +218,9 @@ pub fn Profile() -> impl IntoView {
 
     view! {
         <>
-            // Chrome (TopHeader + FloatingDock) stays a bare page-root
-            // sibling, OUTSIDE the .page-enter transform wrapper, so the
-            // fixed dock is never re-anchored to a transformed box.
-            <TopHeader />
-            <FloatingDock />
+            // Chrome (TopHeader + FloatingDock) now lives at the App level
+            // (lib.rs AppChrome) so it persists across navigation — this page
+            // renders only its own content.
             <div class="page-enter mx-auto max-w-2xl space-y-6 pl-24 pr-3 pt-10 pb-6 sm:pl-28 sm:pr-6 sm:pt-14 sm:pb-10">
                 <header class="frosted-card p-6 sm:p-8 animate-fade-up">
                     {move || match profile.get() {
@@ -268,7 +267,9 @@ pub fn Profile() -> impl IntoView {
                                 <div class="min-w-0 flex-1 text-center sm:text-left">
                                     {move || if editing.get() && is_self_view.get() {
                                         view! {
-                                            <div class="space-y-2 text-left">
+                                            <Modal open=editing>
+                                            <div class="frosted-card frosted-card-strong p-5 space-y-3 text-left">
+                                            <h3 class="text-base font-semibold text-primary">"Edit profile"</h3>
                                                 <input
                                                     class="frosted-input text-sm"
                                                     type="text"
@@ -317,12 +318,13 @@ pub fn Profile() -> impl IntoView {
                                                     </button>
                                                 </div>
                                             </div>
+                                            </Modal>
                                         }.into_any()
                                     } else {
                                         let me_view = me.clone();
                                         view! {
                                             <>
-                                                <h1 class="text-2xl font-bold text-slate-900 dark:text-slate-50 truncate">
+                                                <h1 class="text-2xl font-bold text-white truncate">
                                                     {me_view.name.clone()}
                                                 </h1>
                                                 {if me_view.bio.is_empty() {
@@ -489,11 +491,11 @@ pub fn Profile() -> impl IntoView {
                                                         }}
                                                         // Hover overlay with like/comment counts.
                                                         <div class="pointer-events-none absolute inset-0 flex items-center justify-center gap-4 bg-black/0 text-white opacity-0 transition group-hover:bg-black/35 group-hover:opacity-100">
-                                                            <span class="inline-flex items-center gap-1 text-sm font-semibold">
-                                                                "❤ " {likes}
+                                                            <span class="inline-flex items-center gap-1.5 text-sm font-semibold">
+                                                                <HeartIcon class="h-4 w-4" filled=true /> {likes}
                                                             </span>
-                                                            <span class="inline-flex items-center gap-1 text-sm font-semibold">
-                                                                "💬 " {comments}
+                                                            <span class="inline-flex items-center gap-1.5 text-sm font-semibold">
+                                                                <CommentIcon class="h-4 w-4" /> {comments}
                                                             </span>
                                                         </div>
                                                     </NavLink>

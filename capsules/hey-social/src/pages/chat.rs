@@ -28,7 +28,7 @@ use crate::api::groups::{
 };
 use crate::app_modals::AppModals;
 use crate::components::icons::{ArrowRightIcon, ChatIcon, PlusIcon, UserIcon};
-use crate::components::{FloatingDock, Modal, NavLink, TopHeader};
+use crate::components::{Modal, NavLink};
 
 #[component]
 pub fn Chat() -> impl IntoView {
@@ -100,8 +100,6 @@ pub fn Chat() -> impl IntoView {
 
     view! {
         <>
-            <TopHeader />
-            <FloatingDock />
             <div class="mx-auto max-w-6xl h-[calc(100vh-3.5rem)] pl-20 sm:pl-24 sm:h-[calc(100vh-4.5rem)] flex">
                 <div
                     class="w-full md:w-80 md:border-r md:border-surface md:flex"

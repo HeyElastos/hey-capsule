@@ -6,7 +6,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use crate::api::posts::{get_posts, Post};
 use crate::components::icons::VideoIcon;
-use crate::components::{FloatingDock, NavLink, PostCard, TopHeader};
+use crate::components::{NavLink, PostCard};
 
 #[component]
 pub fn Clips() -> impl IntoView {
@@ -33,10 +33,6 @@ pub fn Clips() -> impl IntoView {
 
     view! {
         <>
-            // Chrome stays a bare page-root sibling, outside the .page-enter
-            // transform, so the fixed dock isn't re-anchored.
-            <TopHeader />
-            <FloatingDock />
             <div class="page-enter mx-auto max-w-2xl space-y-6 pl-24 pr-3 py-6 sm:pl-28 sm:pr-6 sm:py-10">
                 {move || if loading.get() {
                     view! {
