@@ -52,35 +52,12 @@ const TOKEN_STORE_KEY: &str = "hey-capability-tokens";
 /// fine — the cookie rides via `credentials: 'include'` automatically).
 const RUNTIME_TOKEN_KEY: &str = "hey-runtime-token";
 
-#[derive(Debug, Clone)]
-pub struct RuntimeError {
-    pub message: String,
-    pub status: Option<u16>,
-}
-
-impl RuntimeError {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            status: None,
-        }
-    }
-    pub fn with_status(message: impl Into<String>, status: u16) -> Self {
-        Self {
-            message: message.into(),
-            status: Some(status),
-        }
-    }
-}
-
-impl std::fmt::Display for RuntimeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.status {
-            Some(s) => write!(f, "{} (HTTP {})", self.message, s),
-            None => write!(f, "{}", self.message),
-        }
-    }
-}
+// RuntimeError is sourced from the shared engine so hey-social's error type IS
+// hey_core's. This unifies the type across the apps and lets engine-backed
+// modules (passkey today; more as the runtime migration proceeds) return errors
+// that hey-social code handles directly. Same fields (message, status) + new /
+// with_status / Display, so every existing construction and match still compiles.
+pub use hey_core::runtime::RuntimeError;
 
 fn window() -> web_sys::Window {
     web_sys::window().expect("no window")

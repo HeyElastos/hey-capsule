@@ -1535,15 +1535,6 @@ fn ratchet_step_recv(
     Ok(mk)
 }
 
-/// Is (`dh_hex`, `n`) a message we have ALREADY consumed in-order on the
-/// current receiving chain (its key derived + deleted, not stashed)? Used to
-/// short-circuit redeliveries cheaply without re-running the ratchet.
-fn already_consumed(st: &RatchetState, dh_hex: &str, n: u32) -> bool {
-    st.dhr_pub.as_deref() == Some(dh_hex)
-        && n < st.nr
-        && !st.skipped.iter().any(|k| k.dh == dh_hex && k.n == n)
-}
-
 // ── Public send / receive entry points ───────────────────────────────
 
 /// Build the wire string for a ratchet message: advance the sending chain,
@@ -1927,35 +1918,25 @@ async fn receive_ratchet_message(
     let dh_hex = hx(&dh_bytes);
     let dedup_id = ratchet_dedup_id(envelope);
 
-    // The chain already advanced past this (dh, n) and its key is not stashed.
-    // Two sub-cases that already_consumed can't tell apart on its own:
-    //   * a redelivery of a message we DID store (conversation has dedup_id) —
-    //     a no-op (the advance was persisted AFTER the plaintext was stored);
-    //   * a skipped key we EVICTED (TTL/FIFO) before this out-of-order message
-    //     arrived — undecryptable forever. We MUST NOT silently drop it: record
-    //     a deduped "undecryptable" marker so the loss is visible + idempotent.
-    if already_consumed(&st0, &dh_hex, n) {
-        if conv_has(&c.did, &dedup_id).await {
-            return Ok(());
-        }
-        return store_incoming_message(
-            &c.did,
-            "⚠️ A message could not be decrypted — it arrived after its key had expired.",
-            now_ms(),
-            Some(&dedup_id),
-        )
-        .await;
-    }
-
-    // Copy-on-write advance; commit only on an authenticated decrypt.
+    // No pre-decrypt short-circuit, and we NEVER store anything that didn't open
+    // + verify: a message we can't decrypt is indistinguishable from a forgery
+    // (the relay/anyone who learns the queue id can craft one with the peer's
+    // public eph + any n), so storing an "undecryptable" marker for it would let
+    // them inject unauthenticated lines into the conversation. Instead the whole
+    // advance runs on a CLONE that is committed only after an AUTHENTICATED
+    // decrypt+verify; if that fails we either no-op a genuine redelivery (the
+    // conversation already holds this exact ciphertext) or return an explicit
+    // Err (logged by the receive loop) — never a silent Ok, never a silent drop.
+    // A genuinely lost message (its skipped key was evicted by TTL/FIFO before it
+    // arrived) lands here too: surfaced as a logged Err, not invented UI.
     let mut st = st0.clone();
     let mk = match ratchet_step_recv(&mut st, &dh_hex, dh_bytes, pn, n) {
         Ok(mk) => mk,
         Err(e) => {
             if conv_has(&c.did, &dedup_id).await {
-                return Ok(()); // redelivery of an old/odd message — benign
+                return Ok(()); // redelivery of an already-stored message — benign
             }
-            return Err(format!("ratchet advance: {e}"));
+            return Err(format!("ratchet advance (undecryptable/forged, dropped): {e}"));
         }
     };
     let via = decrypt_via_for_contact(&c)?;
@@ -1966,7 +1947,7 @@ async fn receive_ratchet_message(
             if conv_has(&c.did, &dedup_id).await {
                 return Ok(());
             }
-            return Err(format!("ratchet decrypt: {e}"));
+            return Err(format!("ratchet decrypt (undecryptable/forged, dropped): {e}"));
         }
     };
 
@@ -2055,10 +2036,14 @@ async fn bootstrap_responder_ratchet(
     let prekey_priv = b32(&prekey_state.dhs_priv)?;
     let prekey_pub = b32(&prekey_state.dhs_pub)?;
     let state = ratchet_init_responder(sk, prekey_priv, prekey_pub, bob_dh)?;
+    // Write the bootstrapped state under the peer's real DID, but DO NOT remove
+    // the prekey stash here — the caller removes it only AFTER write_contacts
+    // durably promotes the contact (so a contacts-write failure leaves the stash
+    // intact and a redelivered handshake can re-bootstrap, rather than wedging
+    // the contact in PendingInvite with its prekey already gone).
     write_ratchet(real_did, &state)
         .await
         .map_err(|e| e.to_string())?;
-    remove_ratchet(placeholder_did).await;
     Ok(true)
 }
 
@@ -2160,6 +2145,14 @@ async fn receive_handshake(inner: &InnerPayload, on_queue: &str) -> Result<(), S
     list.push(c);
     list.sort_by(|a, b| b.last_ts.cmp(&a.last_ts));
     write_contacts(&list).await.map_err(|e| e.to_string())?;
+
+    // Contact is now durably promoted — only NOW retire the prekey stash (the
+    // bootstrap wrote the real-DID ratchet state but deliberately left the stash
+    // so a write_contacts failure above would have left a re-bootstrappable
+    // PendingInvite). On the no-ratchet path the stash was already dropped.
+    if ratchet_capable {
+        remove_ratchet(&placeholder_did).await;
+    }
 
     // Send the welcome on BOB's queue so he learns Alice's new queue.
     let s = match session::current() {

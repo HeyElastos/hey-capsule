@@ -18,6 +18,8 @@ Status legend: ✅ done · 🔜 next · ⏳ later · 🧊 frozen (do not touch)
 | `crypto.rs` | `pub use hey_core::crypto::*`. Fixed real bug: social was on `hpq-1`, engine on `hpq-2`; couldn't interop. Engine is backward-compatible superset (key derivation byte-identical, decrypts `hpq-1`). |
 | `identity.rs` | `pub use hey_core::identity::*` (was byte-identical leaf). |
 | `session.rs` | `pub use hey_core::session::*`. `Session` struct identical; keys come from `CapsuleCtx` (set in `main.rs`). Same localStorage keys → no re-login. |
+| `RuntimeError` | `pub use hey_core::runtime::RuntimeError` (struct+impls were identical, no extra impls). Unifies the error type across apps — the keystone that lets engine-backed modules return errors hey-social handles directly. |
+| `passkey.rs` | `pub use hey_core::passkey::*` (was byte-identical; was blocked only on the `RuntimeError` unification above). Engine version runs under `CapsuleCtx` → same `/api/apps/hey-social/*` calls + same shared-identity dual-write. |
 
 `CapsuleCtx::init(...)` is wired in `hey-social/src/main.rs` with hey-social's
 exact values (capsule_id "hey-social", namespace "Hey", session_key
