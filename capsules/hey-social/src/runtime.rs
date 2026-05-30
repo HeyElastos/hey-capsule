@@ -8,10 +8,12 @@
 // function was verified equivalent to hey-social's former local copy modulo
 // that ctx (see docs/hey-core-migration.md).
 //
+// `content` / `ipfs` is now re-exported too: the immutable-CID byte cache was
+// promoted INTO hey_core::runtime::content (Phase B), so both apps share one
+// cached implementation.
+//
 // KEPT local (social-specific or social-ahead — not yet promoted into the
 // engine):
-//   * `content` / `ipfs` — the content-provider wrapper, which carries
-//     hey-social's immutable-CID byte cache (social-ahead; Phase B promotes it).
 //   * `identity_provider` — the runtime-held-key wrapper events.rs/api::dms
 //     depend on; kept local until its size-drift vs the engine is reconciled.
 //   * boot-splash helpers (boot_log / warp_boot_into_feed / hide_boot_splash /
@@ -29,8 +31,8 @@ use wasm_bindgen_futures::JsFuture;
 // shared), and session inherit/introspection. Verified equivalent to
 // hey-social's former local copies modulo CapsuleCtx.
 pub use hey_core::runtime::{
-    acquire_boot_capabilities, api_base, api_url, bearer_ready, did_provider,
-    ensure_capability_token, home_launch_token, inherit_session, peer, provider_call,
+    acquire_boot_capabilities, api_base, api_url, bearer_ready, content, did_provider,
+    ensure_capability_token, home_launch_token, inherit_session, ipfs, peer, provider_call,
     redeem_launch_token, scrub_launch_token_from_url, session_current, shared_read_json,
     shared_write_json, storage, transcoder, upstream_fetch, RuntimeError, SharedIdentity,
 };
@@ -39,9 +41,6 @@ fn window() -> web_sys::Window {
     web_sys::window().expect("no window")
 }
 
-fn encode_uri(s: &str) -> String {
-    js_sys::encode_uri_component(s).as_string().unwrap_or_default()
-}
 
 // ── Identity (runtime-held signing key — the wallet model) ────────────
 //
@@ -130,176 +129,6 @@ pub mod identity_provider {
     }
 }
 
-// ── Content provider (publish / fetch / ensure / unpublish) ──────────
-//
-// Upstream Elastos Runtime expects app capsules to call the abstract
-// content provider (elastos://content/*), NOT the raw ipfs provider —
-// per CONTENT_AVAILABILITY.md the ipfs provider is system-only. The
-// content provider sits between us and Kubo/supernode/etc, handling
-// the publish flow end-to-end (local pin → network-available with a
-// signed availability receipt) and gating encrypted blobs through dDRM.
-//
-// KEPT local because it carries hey-social's immutable-CID byte cache
-// (social-ahead of the engine's content module — Phase B promotes the cache
-// up, after which this can re-export the engine like the rest). The wrappers
-// call the RE-EXPORTED provider_call / api_base, and the kept `encode_uri`.
-
-pub mod content {
-    use super::{api_base, encode_uri, provider_call, RuntimeError, B64};
-    use base64::Engine;
-    use serde_json::{json, Value};
-    use std::cell::RefCell;
-    use std::collections::{HashMap, VecDeque};
-
-    // ── Immutable-CID byte cache ─────────────────────────────────────────
-    // Content addressing makes this trivially safe: a CID is the hash of its
-    // bytes, so cached bytes can never go stale. The cache is bounded by both
-    // entry count and total bytes (FIFO eviction) so a long session can't
-    // grow the heap without limit, and we skip blobs above a per-entry cap —
-    // large media is rendered via the gateway <img>/<video> path, not
-    // get_bytes, so in practice the cache stays full of small dag-cbor post
-    // bodies. A persistent tier (Cache API / IndexedDB) can layer underneath
-    // later; it would share `cache_key`.
-    const CID_CACHE_MAX_ENTRIES: usize = 512;
-    const CID_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
-    const CID_CACHE_MAX_ENTRY_BYTES: usize = 1024 * 1024;
-
-    thread_local! {
-        static CID_CACHE: RefCell<CidCache> = RefCell::new(CidCache::default());
-    }
-
-    #[derive(Default)]
-    struct CidCache {
-        map: HashMap<String, Vec<u8>>,
-        order: VecDeque<String>,
-        total_bytes: usize,
-    }
-
-    impl CidCache {
-        fn get(&self, key: &str) -> Option<Vec<u8>> {
-            self.map.get(key).cloned()
-        }
-
-        fn put(&mut self, key: String, bytes: &[u8]) {
-            // Skip oversized blobs and re-inserts (CIDs are immutable, so a
-            // cached entry is already the canonical bytes).
-            if bytes.len() > CID_CACHE_MAX_ENTRY_BYTES || self.map.contains_key(&key) {
-                return;
-            }
-            while !self.order.is_empty()
-                && (self.order.len() >= CID_CACHE_MAX_ENTRIES
-                    || self.total_bytes + bytes.len() > CID_CACHE_MAX_BYTES)
-            {
-                if let Some(old) = self.order.pop_front() {
-                    if let Some(v) = self.map.remove(&old) {
-                        self.total_bytes -= v.len();
-                    }
-                }
-            }
-            self.total_bytes += bytes.len();
-            self.order.push_back(key.clone());
-            self.map.insert(key, bytes.to_vec());
-        }
-    }
-
-    fn cache_key(cid: &str, path: Option<&str>) -> String {
-        match path {
-            // \u{1f} (unit separator) can't appear in a CID or a path segment,
-            // so it's a collision-free join.
-            Some(p) => format!("{cid}\u{1f}{p}"),
-            None => cid.to_string(),
-        }
-    }
-
-    pub async fn add_bytes(
-        bytes: &[u8],
-        filename: &str,
-        pin: bool,
-    ) -> Result<Value, RuntimeError> {
-        // `pin=true` historically meant "we want this kept around"; mirror
-        // that as the network_default availability policy. `pin=false`
-        // maps to local_pin so the bytes are still recoverable on this
-        // node but no replication is requested.
-        let policy = if pin { "network_default" } else { "local_pin" };
-        let body = json!({
-            "data": B64.encode(bytes),
-            "filename": filename,
-            "policy": policy,
-        });
-        provider_call("content", "publish", body).await
-    }
-
-    pub async fn get_bytes(cid: &str, path: Option<&str>) -> Result<Vec<u8>, RuntimeError> {
-        // A (cid, path) pair maps to bytes that can never change, so a cache
-        // hit is always correct — this collapses repeat fetches (feed
-        // re-render, scroll-back, navigating away and back) to one round-trip.
-        let key = cache_key(cid, path);
-        if let Some(hit) = CID_CACHE.with(|c| c.borrow().get(&key)) {
-            return Ok(hit);
-        }
-        let mut body = json!({ "cid": cid });
-        if let Some(p) = path {
-            body["path"] = Value::String(p.into());
-        }
-        let resp = provider_call("content", "fetch", body).await?;
-        let b64 = resp
-            .get("data")
-            .and_then(|d| d.get("data"))
-            .and_then(|d| d.as_str())
-            .or_else(|| resp.get("data").and_then(|d| d.as_str()))
-            .ok_or_else(|| {
-                RuntimeError::new(format!("content.fetch({cid}): no data in response"))
-            })?;
-        let bytes = B64
-            .decode(b64)
-            .map_err(|e| RuntimeError::new(format!("content.fetch base64: {e}")))?;
-        CID_CACHE.with(|c| c.borrow_mut().put(key, &bytes));
-        Ok(bytes)
-    }
-
-    // The IPFS gateway is proxied by nginx at /<API_BASE>/ipfs/<CID>; CIDs are
-    // content-addressed so possession of the CID is itself the access token,
-    // making this safe for direct <img> src binding (which can't carry headers).
-    // (The gateway is an HTTP byte server, not the restricted provider RPC —
-    // capsules are still allowed to fetch through it.)
-    pub fn gateway_url(cid: &str, path: Option<&str>) -> String {
-        let suffix = match path {
-            Some(p) => format!("/{}", p.trim_start_matches('/')),
-            None => String::new(),
-        };
-        format!("{}/ipfs/{}{}", api_base(), encode_uri(cid), suffix)
-    }
-
-    pub async fn pin(cid: &str) -> Result<Value, RuntimeError> {
-        provider_call(
-            "content",
-            "ensure",
-            json!({ "cid": cid, "policy": "network_default" }),
-        )
-        .await
-    }
-    pub async fn unpin(cid: &str) -> Result<Value, RuntimeError> {
-        provider_call("content", "unpublish", json!({ "cid": cid })).await
-    }
-
-    // Extract a CID from a publish response. Handles both shapes:
-    //   * legacy ipfs-provider:           { cid } or { data: { cid } }
-    //   * upstream availability receipt:  { payload: { cid, uri, ... }, signer_did, signature }
-    // Callers use this so they don't have to know which provider
-    // implementation is on the other end.
-    pub fn extract_cid(resp: &Value) -> Option<String> {
-        resp.get("payload")
-            .and_then(|p| p.get("cid"))
-            .and_then(|c| c.as_str())
-            .or_else(|| resp.get("data").and_then(|d| d.get("cid")).and_then(|c| c.as_str()))
-            .or_else(|| resp.get("cid").and_then(|c| c.as_str()))
-            .map(String::from)
-    }
-}
-
-// Compatibility alias — many call sites still write `runtime::ipfs::*`.
-// They get the content-provider wiring transparently.
-pub use content as ipfs;
 
 // ── Boot splash (social-only UI) ──────────────────────────────────────
 

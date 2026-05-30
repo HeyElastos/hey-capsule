@@ -100,8 +100,13 @@ engine), `api/posts.rs`, `api/groups.rs`, `api/notifications.rs`, `pages/`,
 - **Phase A.2 🔜** runtime auth/transport selective re-export + `RuntimeError`
   unification + `passkey` re-export. Keep social-ahead modules (`content`,
   `did_provider`) + boot helpers local. Also re-export `api/outbox` (identical).
-- **Phase B ⏳** promote `content`+CID cache and reconcile `did_provider` into
-  the engine; extract generic dag-cbor codec → engine. Then social re-exports.
+- **Phase B ✅ (content)** CID byte cache promoted INTO `hey_core::runtime::content`;
+  hey-social re-exports `content`/`ipfs` (no more local copy) so both apps share one
+  cached implementation. Engine log prefixes parameterized via `ctx::capsule_id()`
+  (hey-messenger logs now self-label). Verified by a 3-dim adversarial workflow
+  (allEquivalent, 0 breaking). hey-social `runtime.rs` now 183 lines (was 1373).
+  Remaining Phase B: extract the generic dag-cbor/IPLD codec → engine (post schema
+  stays in hey-social).
 - **Phase C ⏳** pluggable `peer_receiver::route()`; port `events`
   provider-signing into engine; adopt engine `api/dms` (Double Ratchet) for
   social; reconcile `api/profile`.

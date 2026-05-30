@@ -167,7 +167,8 @@ pub async fn redeem_launch_token() -> bool {
         }
         Ok(resp) if resp.status() != 404 && resp.status() != 405 => {
             log_warn(&format!(
-                "[hey-social] session/start rejected: {}",
+                "[{}] session/start rejected: {}",
+                crate::ctx::capsule_id(),
                 resp.status()
             ));
             return false;
@@ -176,7 +177,10 @@ pub async fn redeem_launch_token() -> bool {
             // 404 / 405 → older runtime, try legacy name.
         }
         Err(e) => {
-            log_warn(&format!("[hey-social] session/start fetch error: {e:?}"));
+            log_warn(&format!(
+                "[{}] session/start fetch error: {e:?}",
+                crate::ctx::capsule_id()
+            ));
             return false;
         }
     }
@@ -186,7 +190,8 @@ pub async fn redeem_launch_token() -> bool {
         Ok(resp) => {
             if !resp.ok() {
                 log_warn(&format!(
-                    "[hey-social] runtime-token (legacy) rejected: {}",
+                    "[{}] runtime-token (legacy) rejected: {}",
+                    crate::ctx::capsule_id(),
                     resp.status()
                 ));
                 return false;
@@ -210,7 +215,10 @@ pub async fn redeem_launch_token() -> bool {
             {
                 let _ = SessionStorage::set(crate::ctx::runtime_token_key(), tok);
             } else {
-                log_warn("[hey-social] runtime-token response had no `token` field");
+                log_warn(&format!(
+                    "[{}] runtime-token response had no `token` field",
+                    crate::ctx::capsule_id()
+                ));
                 return false;
             }
             let _ = SessionStorage::set(crate::ctx::session_redeemed_key(), "true");
@@ -552,6 +560,67 @@ pub mod content {
     use super::{api_base, provider_call, RuntimeError, B64};
     use base64::Engine;
     use serde_json::{json, Value};
+    use std::cell::RefCell;
+    use std::collections::{HashMap, VecDeque};
+
+    // ── Immutable-CID byte cache ─────────────────────────────────────────
+    // Content addressing makes this trivially safe: a CID is the hash of its
+    // bytes, so cached bytes can never go stale. Bounded by entry count and
+    // total bytes (FIFO eviction) so a long session can't grow the heap without
+    // limit; oversized blobs are skipped (large media renders via the gateway
+    // <img>/<video> path, not get_bytes, so the cache stays full of small
+    // dag-cbor bodies). Lives in the ENGINE so every app (hey-social,
+    // hey-messenger, future hey-mail) gets cached content fetches for free.
+    const CID_CACHE_MAX_ENTRIES: usize = 512;
+    const CID_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+    const CID_CACHE_MAX_ENTRY_BYTES: usize = 1024 * 1024;
+
+    thread_local! {
+        static CID_CACHE: RefCell<CidCache> = RefCell::new(CidCache::default());
+    }
+
+    #[derive(Default)]
+    struct CidCache {
+        map: HashMap<String, Vec<u8>>,
+        order: VecDeque<String>,
+        total_bytes: usize,
+    }
+
+    impl CidCache {
+        fn get(&self, key: &str) -> Option<Vec<u8>> {
+            self.map.get(key).cloned()
+        }
+
+        fn put(&mut self, key: String, bytes: &[u8]) {
+            // Skip oversized blobs and re-inserts (CIDs are immutable, so a
+            // cached entry is already the canonical bytes).
+            if bytes.len() > CID_CACHE_MAX_ENTRY_BYTES || self.map.contains_key(&key) {
+                return;
+            }
+            while !self.order.is_empty()
+                && (self.order.len() >= CID_CACHE_MAX_ENTRIES
+                    || self.total_bytes + bytes.len() > CID_CACHE_MAX_BYTES)
+            {
+                if let Some(old) = self.order.pop_front() {
+                    if let Some(v) = self.map.remove(&old) {
+                        self.total_bytes -= v.len();
+                    }
+                }
+            }
+            self.total_bytes += bytes.len();
+            self.order.push_back(key.clone());
+            self.map.insert(key, bytes.to_vec());
+        }
+    }
+
+    fn cache_key(cid: &str, path: Option<&str>) -> String {
+        match path {
+            // \u{1f} (unit separator) can't appear in a CID or a path segment,
+            // so it's a collision-free join.
+            Some(p) => format!("{cid}\u{1f}{p}"),
+            None => cid.to_string(),
+        }
+    }
 
     pub async fn add_bytes(
         bytes: &[u8],
@@ -572,6 +641,13 @@ pub mod content {
     }
 
     pub async fn get_bytes(cid: &str, path: Option<&str>) -> Result<Vec<u8>, RuntimeError> {
+        // A (cid, path) pair maps to bytes that can never change, so a cache
+        // hit is always correct — this collapses repeat fetches (feed
+        // re-render, scroll-back, navigating away and back) to one round-trip.
+        let key = cache_key(cid, path);
+        if let Some(hit) = CID_CACHE.with(|c| c.borrow().get(&key)) {
+            return Ok(hit);
+        }
         let mut body = json!({ "cid": cid });
         if let Some(p) = path {
             body["path"] = Value::String(p.into());
@@ -585,8 +661,11 @@ pub mod content {
             .ok_or_else(|| {
                 RuntimeError::new(format!("content.fetch({cid}): no data in response"))
             })?;
-        B64.decode(b64)
-            .map_err(|e| RuntimeError::new(format!("content.fetch base64: {e}")))
+        let bytes = B64
+            .decode(b64)
+            .map_err(|e| RuntimeError::new(format!("content.fetch base64: {e}")))?;
+        CID_CACHE.with(|c| c.borrow_mut().put(key, &bytes));
+        Ok(bytes)
     }
 
     // The IPFS gateway is proxied by nginx at /<API_BASE>/ipfs/<CID>; CIDs are
@@ -1033,7 +1112,8 @@ pub mod storage {
         // Downgrade to a debug log and return Ok so the UI stays quiet.
         if resp.status() == 412 {
             web_sys::console::debug_1(&JsValue::from_str(&format!(
-                "[hey-social] PUT {path} hit 412 (create-only); existing value retained"
+                "[{}] PUT {path} hit 412 (create-only); existing value retained",
+                crate::ctx::capsule_id()
             )));
             return Ok(());
         }
