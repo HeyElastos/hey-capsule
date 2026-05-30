@@ -96,10 +96,12 @@ pub fn api_url(path: &str) -> String {
 // token until Home revokes the session. Hard single-use needs the runtime to
 // consume `jti` exactly once at /session/start — a follow-up fork patch.
 const DEVICE_LINK_PREFIX: &str = "dl1.";
-// TEMP (testing): 24h so the QR doesn't expire mid-debug. Revert to 300_000
-// (5 min) once phone-linking is confirmed working. NOTE the inner Home launch
-// token still carries its own runtime-side expiry, so this isn't "forever".
-const DEVICE_LINK_TTL_MS: i64 = 86_400_000;
+// 5-min QR lifetime. NOTE: phone device-link is PARKED — the runtime mints a
+// NON-DELEGATABLE, desktop-session-bound bearer at /runtime-token, so a phone
+// can't complete a session against the desktop's token. Making it work needs a
+// runtime `device-join` endpoint (mint the phone its OWN session); until then
+// this TTL only governs the capsule-side envelope. See session-state memo.
+const DEVICE_LINK_TTL_MS: i64 = 300_000;
 /// Clock-skew grace. The phone checks `exp` against ITS OWN wall clock, which can
 /// run ahead of the desktop that stamped the token — without leeway a fresh QR
 /// gets rejected as "expired" on a slightly-fast phone (which silently lands the

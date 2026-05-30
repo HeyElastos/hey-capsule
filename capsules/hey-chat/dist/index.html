@@ -8,8 +8,8 @@
     <title>Hey Chat</title>
     
 <script type="module">
-import init, * as bindings from './hey-chat-9816848f9bcebe0d.js';
-const wasm = await init({ module_or_path: './hey-chat-9816848f9bcebe0d_bg.wasm' });
+import init, * as bindings from './hey-chat-3b43f6577b8c17b5.js';
+const wasm = await init({ module_or_path: './hey-chat-3b43f6577b8c17b5_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -151,7 +151,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         };
       })();
     </script>
-  <link rel="modulepreload" href="./hey-chat-9816848f9bcebe0d.js" crossorigin="anonymous" integrity="sha384-/wO9hTRFcH6pxUrqq+VtSKffAemS7X4wuuUSA1wY7m6kwQrX723u7667tPuEkjtc"><link rel="preload" href="./hey-chat-9816848f9bcebe0d_bg.wasm" crossorigin="anonymous" integrity="sha384-8IuO1kcD3+z9H+O7FspoRaBiG1dAbw+T4BysbPmT5km+FfUOX3La8Lf5yycUybtv" as="fetch" type="application/wasm"></head>
+  <link rel="modulepreload" href="./hey-chat-3b43f6577b8c17b5.js" crossorigin="anonymous" integrity="sha384-/wO9hTRFcH6pxUrqq+VtSKffAemS7X4wuuUSA1wY7m6kwQrX723u7667tPuEkjtc"><link rel="preload" href="./hey-chat-3b43f6577b8c17b5_bg.wasm" crossorigin="anonymous" integrity="sha384-7Ej3mPbu+rEEqfcwJIbr1D3oo/kuSS/ZRIuLtc5prYdCbKRWjyJbbzxOmTobJ4al" as="fetch" type="application/wasm"></head>
   <body>
     <!-- The Leptos app mounts directly into <body> (mount_to_body in main.rs).
          No #root div: a leftover empty #root with height:100% rendered as a
