@@ -17,7 +17,10 @@
 // its social arms.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
 
 use serde_json::Value;
 use wasm_bindgen::JsValue;
@@ -32,11 +35,55 @@ use crate::session;
 const POLL_INTERVAL_MS: i32 = 5_000;
 const RECV_LIMIT: u32 = 50;
 
+// ── Pluggable app routing (hey-social registers its feed/group arms) ──
+//
+// The engine handles `dm.message` + the v2 DM queues natively (every app gets
+// DMs). An app can ALSO register handlers for its own SignedEvent types
+// (hey-social: post.create.v2 / post.* / follow.request / group.*) and provide
+// extra topics to subscribe each poll (hey-social: followed-user post topics +
+// its follow inbox). hey-chat registers nothing, so its loop is DM-only — the
+// behavior is byte-identical to before. Single-threaded wasm ⇒ thread_local +
+// Rc is sufficient; register BEFORE `run()`.
+
+type BoxFut = Pin<Box<dyn Future<Output = Result<(), String>>>>;
+type RouteHandler = Rc<dyn Fn(String, Value, String) -> BoxFut>;
+type TopicsProvider = Rc<dyn Fn() -> Pin<Box<dyn Future<Output = Vec<String>>>>>;
+
 // Session-scoped cache of topics we've already issued join_topic for —
 // join is idempotent provider-side but the round-trip is wasteful. Resets
 // on logout (wasm itself resets).
 thread_local! {
     static JOINED_TOPICS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static HANDLERS: RefCell<HashMap<String, RouteHandler>> = RefCell::new(HashMap::new());
+    static EXTRA_TOPICS: RefCell<Option<TopicsProvider>> = RefCell::new(None);
+}
+
+/// Register an app handler for a SignedEvent `event_type`. Called BEFORE `run()`.
+/// `dm.message` is always engine-handled and cannot be overridden. The handler
+/// receives owned `(event_type, payload, sender_did)`.
+pub fn register_handler<F, Fut>(event_type: &str, handler: F)
+where
+    F: Fn(String, Value, String) -> Fut + 'static,
+    Fut: Future<Output = Result<(), String>> + 'static,
+{
+    let h: RouteHandler = Rc::new(move |t, p, s| Box::pin(handler(t, p, s)));
+    HANDLERS.with(|m| {
+        m.borrow_mut().insert(event_type.to_string(), h);
+    });
+}
+
+/// Register a provider of EXTRA topics to subscribe + drain each poll (all
+/// consumed on the SignedEvent path, skipping our own sender). Called BEFORE
+/// `run()`. hey-social returns its followed-user post topics + follow inbox.
+pub fn set_extra_topics_provider<F, Fut>(f: F)
+where
+    F: Fn() -> Fut + 'static,
+    Fut: Future<Output = Vec<String>> + 'static,
+{
+    let p: TopicsProvider = Rc::new(move || Box::pin(f()));
+    EXTRA_TOPICS.with(|c| {
+        *c.borrow_mut() = Some(p);
+    });
 }
 
 async fn ensure_joined(topic: &str) {
@@ -75,6 +122,18 @@ pub async fn run() {
 
 async fn poll_once(my_did: &str) -> Result<(), String> {
     let consumer_id = format!("{}:{}", crate::ctx::capsule_id(), my_did);
+
+    // 0. App-provided extra topics (hey-social: followed-user post topics + its
+    //    follow inbox). Consumed on the SignedEvent path → app-registered route
+    //    handlers. Empty for hey-chat.
+    let extra = match EXTRA_TOPICS.with(|c| c.borrow().clone()) {
+        Some(p) => p().await,
+        None => Vec::new(),
+    };
+    for topic in &extra {
+        ensure_joined(topic).await;
+        consume_topic(topic, &consumer_id, Some(my_did)).await;
+    }
 
     // 1. Legacy DM inbox — back-compat with v1 hey-v0/dm/<did> senders.
     let dm_topic = format!("hey-v0/dm/{my_did}");
@@ -165,10 +224,19 @@ async fn consume_topic(topic: &str, consumer_id: &str, my_did: Option<&str>) {
     }
 }
 
-/// DM-only routing. Non-DM event types are ignored by the messenger.
+/// Route a verified SignedEvent. The engine ALWAYS stores `dm.message` (so every
+/// app gets DMs even with no registration), then falls through to an app handler
+/// if one is registered — letting an app add extras (hey-social raises a DM
+/// notification) without re-storing. All other event types dispatch purely to an
+/// app handler, or are ignored if none is registered (hey-chat ignores non-DMs).
 async fn route(event_type: &str, payload: &Value, sender_did: &str) -> Result<(), String> {
     if event_type == "dm.message" {
         let _ = dms::receive_message(sender_did, payload).await;
+        // fall through: an app handler may add extras (must NOT re-store).
+    }
+    let handler = HANDLERS.with(|m| m.borrow().get(event_type).cloned());
+    if let Some(h) = handler {
+        return h(event_type.to_string(), payload.clone(), sender_did.to_string()).await;
     }
     Ok(())
 }

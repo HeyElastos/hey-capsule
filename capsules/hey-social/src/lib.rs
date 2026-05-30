@@ -74,10 +74,12 @@ pub fn App() -> impl IntoView {
         runtime::hide_boot_splash();
     });
 
-    // Start the peer-receive subscription loop. No-op while signed out;
-    // begins polling per-topic the moment a session appears.
+    // Register hey-social's federation handlers + extra topics into the shared
+    // engine receiver, then run the one shared poll loop. No-op while signed
+    // out; begins polling the moment a session appears.
     spawn_local(async {
-        peer_receiver::run().await;
+        peer_receiver::register();
+        hey_core::peer_receiver::run().await;
     });
 
     let modals = app_modals::AppModals::default();
