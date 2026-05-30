@@ -86,6 +86,23 @@ const MAX_SKIPPED_KEYS: usize = 2000;
 /// Skipped keys older than this are evicted — a message that never arrived.
 const SKIPPED_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
+// ── Continuous queue rotation (caveat 1) ─────────────────────────────
+// Each side rotates its OWN inbound queue periodically so the relay can't build
+// a long traffic history against one durable per-conversation handle. Reuses the
+// existing `welcome` control message to tell the peer the new queue. HONEST
+// LIMIT: rotation reduces LINKABILITY of a stable handle, but the relay still
+// sees "a packet moved to a topic" and can TIMING-CORRELATE a retire→relight —
+// only the garlic overlay removes that. Partial close, pairs with the overlay.
+/// Rotate the inbound queue after this many received messages on it...
+const QUEUE_ROTATE_MSGS: u32 = 200;
+/// ...or after this long, whichever comes first.
+const QUEUE_ROTATE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// Never rotate more than once per this interval (anti-thrash floor).
+const QUEUE_ROTATE_FLOOR_MS: i64 = 60 * 60 * 1000;
+/// Keep polling a retired queue this long after rotating, so in-flight messages
+/// the peer sent before processing our `welcome` aren't lost (≫ the 5 s poll).
+const QUEUE_GRACE_MS: i64 = 60 * 60 * 1000;
+
 fn conv_path(did: &str) -> String {
     let safe = did.replace(['/', ':'], "_");
     format!("dm/by-did/{safe}.json")
@@ -221,6 +238,32 @@ pub struct DmContact {
     /// ratchet STATE itself lives in dm/ratchet/<did>.json, not here.
     #[serde(default)]
     pub ratchet_capable: bool,
+
+    // ── Continuous queue rotation. All default ⇒ a contact never rotated yet.
+    /// When we last rotated `my_inbound_queue` (ms). 0 ⇒ clock not started; the
+    /// first received message sets it to "now" so rotation can't fire instantly
+    /// for a freshly-loaded legacy contact.
+    #[serde(default)]
+    pub my_queue_rotated_at: i64,
+    /// Messages received on the CURRENT inbound queue since the last rotation.
+    #[serde(default)]
+    pub my_queue_msg_count: u32,
+    /// Recently-retired inbound queues still inside the grace window — we keep
+    /// polling them so in-flight messages aren't lost while the peer switches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_queues: Vec<RetiredQueue>,
+}
+
+/// A rotated-away inbound queue, still polled until `retire_at + QUEUE_GRACE_MS`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetiredQueue {
+    /// 256-bit hex — the old queue id (topic `q/<queue>`).
+    pub queue: String,
+    /// The consumer_id (pseudonym) we read it with.
+    #[serde(default)]
+    pub pseudonym: String,
+    /// When we retired it (ms).
+    pub retire_at: i64,
 }
 
 impl DmContact {
@@ -235,6 +278,14 @@ impl DmContact {
     /// True if this is a legacy contact created before per-pair queues.
     pub fn is_legacy(&self) -> bool {
         self.my_inbound_queue.is_none()
+    }
+
+    /// True if `queue_id` is one we listen on for this contact — the current
+    /// inbound queue OR a recently-retired one still inside the grace window.
+    /// Lets messages that land on an old queue mid-rotation still route home.
+    fn owns_inbound_queue(&self, queue_id: &str) -> bool {
+        self.my_inbound_queue.as_deref() == Some(queue_id)
+            || self.retired_queues.iter().any(|r| r.queue == queue_id)
     }
 }
 
@@ -368,6 +419,9 @@ async fn touch_contact_message(
             mode: IdentityMode::Regular,
             anon_identity: None,
             ratchet_capable: false,
+            my_queue_rotated_at: 0,
+            my_queue_msg_count: 0,
+            retired_queues: Vec::new(),
         });
     }
     list.sort_by(|a, b| b.last_ts.cmp(&a.last_ts));
@@ -884,6 +938,9 @@ pub async fn generate_invite(display_label: &str, mode: IdentityMode) -> Result<
         mode,
         anon_identity: anon,
         ratchet_capable: false,
+        my_queue_rotated_at: 0,
+        my_queue_msg_count: 0,
+        retired_queues: Vec::new(),
     };
     upsert_contact_record(contact)
         .await
@@ -1025,6 +1082,9 @@ pub async fn accept_invite(token: &str, mode: IdentityMode) -> Result<String, St
         mode,
         anon_identity: anon,
         ratchet_capable: ratchet_bootstrap.is_some(),
+        my_queue_rotated_at: 0,
+        my_queue_msg_count: 0,
+        retired_queues: Vec::new(),
     };
     let _ = upsert_contact_record(contact)
         .await
@@ -1981,7 +2041,7 @@ pub async fn receive_v2_wire(topic: &str, wire: &str) -> Result<(), String> {
             // on. Stops a stranger delivering via a leaked queue id.
             let owner = list_contacts().await.into_iter().find(|c| {
                 c.did == inner.sender_did
-                    && c.my_inbound_queue.as_deref() == Some(queue_id)
+                    && c.owns_inbound_queue(queue_id)
                     && c.status == ContactStatus::Active
             });
             let owner = owner.ok_or_else(|| "sender does not match queue owner".to_string())?;
@@ -2003,7 +2063,12 @@ pub async fn receive_v2_wire(topic: &str, wire: &str) -> Result<(), String> {
             if text.is_empty() && atts.is_empty() {
                 return Err("message body has neither text nor attachments".into());
             }
-            store_incoming_message(&inner.sender_did, text, inner.ts, None, atts).await
+            let appended =
+                store_incoming_message(&inner.sender_did, text, inner.ts, None, atts).await?;
+            if appended {
+                maybe_rotate_inbound_queue(&inner.sender_did).await;
+            }
+            Ok(())
         }
         KIND_HANDSHAKE => {
             let queue_id = queue_id.ok_or_else(|| "bad topic".to_string())?;
@@ -2044,17 +2109,19 @@ async fn conv_has(sender: &str, id: &str) -> bool {
 /// Append a received message to its conversation + bump the contact preview.
 /// When `dedup_id` is set, a message already bearing that id is treated as a
 /// redelivery and NOT re-appended (the caller still persists ratchet state).
+/// Returns `true` if a NEW message was appended, `false` on a redelivery —
+/// the caller uses that to count rotation-eligible messages exactly once.
 async fn store_incoming_message(
     sender_did: &str,
     text: &str,
     ts: i64,
     dedup_id: Option<&str>,
     attachments: Vec<Attachment>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut conv = read_conversation(sender_did).await;
     if let Some(id) = dedup_id {
         if conv.iter().any(|m| m.id == id) {
-            return Ok(()); // redelivery — already stored
+            return Ok(false); // redelivery — already stored
         }
     }
     let msg = DmMessage {
@@ -2078,7 +2145,8 @@ async fn store_incoming_message(
         .map_err(|e| e.to_string())?;
     touch_contact_message(sender_did, &preview, msg.ts, 1)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// Receive a Double Ratchet message. The whole ratchet advance runs on a CLONE
@@ -2102,9 +2170,7 @@ async fn receive_ratchet_message(
     let c = list_contacts()
         .await
         .into_iter()
-        .find(|c| {
-            c.my_inbound_queue.as_deref() == Some(queue_id) && c.status == ContactStatus::Active
-        })
+        .find(|c| c.owns_inbound_queue(queue_id) && c.status == ContactStatus::Active)
         .ok_or_else(|| "ratchet message on an unowned queue".to_string())?;
     if !c.ratchet_capable {
         return Err("ratchet message for a non-ratchet contact".into());
@@ -2204,10 +2270,13 @@ async fn receive_ratchet_message(
     }
 
     // Store plaintext FIRST, persist the consumed advance LAST.
-    store_incoming_message(&c.did, text, inner.ts, Some(&dedup_id), atts).await?;
+    let appended = store_incoming_message(&c.did, text, inner.ts, Some(&dedup_id), atts).await?;
     write_ratchet(&c.did, &st)
         .await
         .map_err(|e| e.to_string())?;
+    if appended {
+        maybe_rotate_inbound_queue(&c.did).await;
+    }
     Ok(())
 }
 
@@ -2603,7 +2672,15 @@ pub async fn self_test_v2() -> Result<String, String> {
         return Err("outbox schema roundtrip broken".into());
     }
 
-    Ok("✓ v2 envelope + anon round-trip + invite codec + outbox schema OK".into())
+    // Chain the pure ratchet + queue-rotation self-tests so this one debug entry
+    // point exercises the hybrid PQ ratchet and continuous rotation too.
+    let ratchet = self_test_ratchet().map_err(|e| format!("ratchet self-test: {e}"))?;
+    let rotation =
+        self_test_queue_rotation().map_err(|e| format!("queue-rotation self-test: {e}"))?;
+
+    Ok(format!(
+        "✓ v2 envelope + anon round-trip + invite codec + outbox schema OK\n{ratchet}\n{rotation}"
+    ))
 }
 
 // ── Double Ratchet self-test (pure, no storage/provider) ─────────────
@@ -2845,6 +2922,9 @@ pub fn self_test_ratchet() -> Result<String, String> {
         mode: IdentityMode::Anonymous,
         anon_identity: Some(anon),
         ratchet_capable: true,
+        my_queue_rotated_at: 0,
+        my_queue_msg_count: 0,
+        retired_queues: Vec::new(),
     };
     match decrypt_via_for_contact(&anon_contact)? {
         DecryptVia::Local(_) => {}
@@ -2889,6 +2969,61 @@ pub fn self_test_ratchet() -> Result<String, String> {
     Ok("✓ hybrid ratchet bootstrap + 4-msg DH turns (KEM private rotates) + out-of-order + replay/tamper/cap/kem-ct rejects + classical fallback + anon-local OK".into())
 }
 
+/// Pure self-test for continuous queue rotation (no storage/session/provider):
+/// rotate installs a fresh queue + stashes the old one in the grace list, and
+/// the grace prune drops it only after QUEUE_GRACE_MS.
+pub fn self_test_queue_rotation() -> Result<String, String> {
+    let mut c = DmContact {
+        did: "did:key:zSelfTest".into(),
+        name: "t".into(),
+        last_ts: 0,
+        last_preview: String::new(),
+        unread: 0,
+        my_inbound_queue: Some(random_hex(32)),
+        my_recv_pseudonym: Some(random_hex(16)),
+        their_inbound_queue: Some(random_hex(32)),
+        my_send_pseudonym: Some(random_hex(16)),
+        peer_pubkeys: None,
+        status: ContactStatus::Active,
+        mode: IdentityMode::Regular,
+        anon_identity: None,
+        ratchet_capable: false,
+        my_queue_rotated_at: 1_000,
+        my_queue_msg_count: 5,
+        retired_queues: Vec::new(),
+    };
+    let old_queue = c.my_inbound_queue.clone().unwrap();
+    let now = 2_000;
+    let new_queue = rotate_contact_queue(&mut c, now);
+    if c.my_inbound_queue.as_deref() != Some(new_queue.as_str()) {
+        return Err("rotate did not install the new queue".into());
+    }
+    if new_queue == old_queue {
+        return Err("rotate reused the same queue id".into());
+    }
+    if c.my_queue_msg_count != 0 || c.my_queue_rotated_at != now {
+        return Err("rotate did not reset the clock/counter".into());
+    }
+    if !c
+        .retired_queues
+        .iter()
+        .any(|r| r.queue == old_queue && r.retire_at == now)
+    {
+        return Err("rotate did not stash the old queue in the grace list".into());
+    }
+    // Inside the grace window: prune keeps it (so my_v2_topics keeps polling it).
+    let expired = prune_retired_queues(&mut c, now + QUEUE_GRACE_MS - 1);
+    if !expired.is_empty() || c.retired_queues.len() != 1 {
+        return Err("prune dropped a queue still inside the grace window".into());
+    }
+    // Past the grace window: prune drops it and returns its topic to forget.
+    let expired = prune_retired_queues(&mut c, now + QUEUE_GRACE_MS);
+    if expired.len() != 1 || !expired[0].ends_with(&old_queue) || !c.retired_queues.is_empty() {
+        return Err("prune did not retire an expired grace queue".into());
+    }
+    Ok("✓ queue rotation: install + grace stash + prune at TTL OK".into())
+}
+
 // ── Identity wipe ────────────────────────────────────────────────────
 //
 // Counterpart to session::wipe_identity. Drops every DM artifact:
@@ -2913,18 +3048,178 @@ pub async fn wipe_dm_storage() {
     crate::api::outbox::clear().await;
 }
 
+// ── Continuous queue rotation ────────────────────────────────────────
+
+/// Pure in-memory rotation: stash the current inbound queue in the grace list,
+/// mint + install a fresh one, reset the rotation clock + counter. Returns the
+/// new queue id (the caller joins its topic + announces it via a `welcome`).
+/// No I/O — unit-testable by self_test_queue_rotation.
+fn rotate_contact_queue(c: &mut DmContact, now: i64) -> String {
+    let new_queue = random_hex(32);
+    let new_pseudonym = random_hex(16);
+    if let Some(old_q) = c.my_inbound_queue.take() {
+        let old_p = c
+            .my_recv_pseudonym
+            .take()
+            .unwrap_or_else(|| "anonymous".into());
+        c.retired_queues.push(RetiredQueue {
+            queue: old_q,
+            pseudonym: old_p,
+            retire_at: now,
+        });
+    }
+    c.my_inbound_queue = Some(new_queue.clone());
+    c.my_recv_pseudonym = Some(new_pseudonym);
+    c.my_queue_rotated_at = now;
+    c.my_queue_msg_count = 0;
+    new_queue
+}
+
+/// Drop retired queues past the grace window; returns their `q/<id>` topics so
+/// the caller can forget_topic + purge their outbox. No I/O.
+fn prune_retired_queues(c: &mut DmContact, now: i64) -> Vec<String> {
+    let mut expired = Vec::new();
+    c.retired_queues.retain(|rq| {
+        if now - rq.retire_at >= QUEUE_GRACE_MS {
+            expired.push(format!("{TOPIC_PREFIX_V2}/{}", rq.queue));
+            false
+        } else {
+            true
+        }
+    });
+    expired
+}
+
+/// Send a `welcome` telling `their_queue` to switch its sends to `new_queue`.
+/// Signed as the identity this contact knows us by (Regular real DID / Anonymous
+/// ephemeral). Best-effort: any failure just means the peer keeps using the old
+/// queue, which we still poll during the grace window — so no message is lost.
+async fn send_rotation_welcome(
+    their_queue: &str,
+    their_keys: &PeerKeys,
+    new_queue: &str,
+    mode: IdentityMode,
+    anon: Option<&AnonIdentity>,
+) {
+    let Some(s) = session::current() else {
+        return;
+    };
+    let me_real = inner_to_my_did().unwrap_or_default();
+    let (welcome_did, welcome_seed) = match signing_identity(mode, anon, &me_real, &s.auth_key_hex)
+    {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if welcome_did.is_empty() {
+        return;
+    }
+    let welcome_body = json!({ "my_inbound_queue": new_queue });
+    let Ok(welcome_inner) = build_inner(
+        KIND_WELCOME,
+        &welcome_body,
+        &welcome_did,
+        &welcome_seed,
+        None,
+    )
+    .await
+    else {
+        return;
+    };
+    let Ok(envelope) = encrypt_inner_for_peer(&welcome_inner, their_keys) else {
+        return;
+    };
+    let wire = json!({ "type": "dm.v2", "envelope": envelope }).to_string();
+    let topic = format!("{TOPIC_PREFIX_V2}/{their_queue}");
+    let _ = peer::join_topic(&topic).await;
+    let send_pseudonym = random_hex(16);
+    let _ = crate::api::outbox::publish_or_enqueue(&topic, &send_pseudonym, &wire).await;
+}
+
+/// Count one inbound message against the contact's current queue and rotate it
+/// if the trigger tripped (≥ N messages OR ≥ T elapsed, floored to once/hour).
+/// The old queue moves to the grace list (still polled) instead of being dropped
+/// immediately — so a peer mid-switch loses nothing. Best-effort; never blocks
+/// delivery (the message is already stored before this runs).
+async fn maybe_rotate_inbound_queue(peer_did: &str) {
+    let mut list = list_contacts().await;
+    let Some(idx) = list
+        .iter()
+        .position(|c| c.did == peer_did && c.status == ContactStatus::Active)
+    else {
+        return;
+    };
+    if list[idx].my_inbound_queue.is_none() {
+        return;
+    }
+    let now = now_ms();
+
+    list[idx].my_queue_msg_count = list[idx].my_queue_msg_count.saturating_add(1);
+    // Start the clock for a contact that never rotated (don't fire instantly).
+    if list[idx].my_queue_rotated_at == 0 {
+        list[idx].my_queue_rotated_at = now;
+    }
+    let expired = prune_retired_queues(&mut list[idx], now);
+
+    let since = now - list[idx].my_queue_rotated_at;
+    let due = since >= QUEUE_ROTATE_FLOOR_MS
+        && (list[idx].my_queue_msg_count >= QUEUE_ROTATE_MSGS || since >= QUEUE_ROTATE_MS);
+
+    let announce = if due {
+        let new_queue = rotate_contact_queue(&mut list[idx], now);
+        Some((
+            new_queue,
+            list[idx].their_inbound_queue.clone(),
+            list[idx].peer_pubkeys.clone(),
+            list[idx].mode,
+            list[idx].anon_identity.clone(),
+        ))
+    } else {
+        None
+    };
+
+    // One write covers the count bump, the prune, and the rotation.
+    if write_contacts(&list).await.is_err() {
+        return;
+    }
+    for t in &expired {
+        crate::peer_receiver::forget_topic(t).await;
+        crate::api::outbox::purge_topic(t).await;
+    }
+    if let Some((new_queue, their_queue, their_keys, mode, anon)) = announce {
+        let _ = peer::join_topic(&format!("{TOPIC_PREFIX_V2}/{new_queue}")).await;
+        if let (Some(tq), Some(tk)) = (their_queue, their_keys) {
+            send_rotation_welcome(&tq, &tk, &new_queue, mode, anon.as_ref()).await;
+        }
+    }
+}
+
 // ── Helpers exposed to peer_receiver for subscription bookkeeping ────
 
-/// Iterate v2 contacts and return the list of `hey-v0/q/<id>` topics we
-/// must keep joined to receive their messages.
+/// Iterate v2 contacts and return the list of `hey-v0/q/<id>` topics we must
+/// keep joined to receive their messages — the current inbound queue PLUS any
+/// retired queues still inside the grace window (so a peer mid-rotation isn't
+/// dropped).
 pub async fn my_v2_topics() -> Vec<(String, String)> {
-    list_contacts()
-        .await
-        .into_iter()
-        .filter_map(|c| {
-            let q = c.my_inbound_queue?;
-            let consumer_id = c.my_recv_pseudonym.unwrap_or_else(|| "anonymous".into());
-            Some((format!("{TOPIC_PREFIX_V2}/{q}"), consumer_id))
-        })
-        .collect()
+    let now = now_ms();
+    let mut out = Vec::new();
+    for c in list_contacts().await {
+        if let Some(q) = &c.my_inbound_queue {
+            let consumer_id = c
+                .my_recv_pseudonym
+                .clone()
+                .unwrap_or_else(|| "anonymous".into());
+            out.push((format!("{TOPIC_PREFIX_V2}/{q}"), consumer_id));
+        }
+        for rq in &c.retired_queues {
+            if now - rq.retire_at < QUEUE_GRACE_MS {
+                let consumer_id = if rq.pseudonym.is_empty() {
+                    "anonymous".into()
+                } else {
+                    rq.pseudonym.clone()
+                };
+                out.push((format!("{TOPIC_PREFIX_V2}/{}", rq.queue), consumer_id));
+            }
+        }
+    }
+    out
 }
