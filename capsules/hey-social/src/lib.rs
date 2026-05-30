@@ -14,7 +14,6 @@ pub mod identity;
 pub mod ipld;
 pub mod media;
 pub mod pages;
-pub mod passkey;
 pub mod peer_receiver;
 pub mod runtime;
 pub mod session;
@@ -39,6 +38,15 @@ fn router_base() -> Cow<'static, str> {
 
 #[component]
 pub fn App() -> impl IntoView {
+    // Runtime-only (wallet capsule): drop any legacy session that still carries
+    // a local Ed25519 seed (auth_key_hex set) so no seed lingers in
+    // localStorage. Identity is re-derived from the runtime by Landing.
+    if let Some(s) = crate::session::current() {
+        if !s.auth_key_hex.is_empty() {
+            crate::session::clear();
+        }
+    }
+
     // Wallet-style boot — narrow scope on purpose:
     //   1. Redeem any ?home_token=... the runtime appended to our URL
     //      via redeem_launch_token() (POSTs to the canonical

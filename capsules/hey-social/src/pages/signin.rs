@@ -1,6 +1,6 @@
-// SignIn — in the React reference, the sign-in UX IS the Landing page
-// (one screen, passkey button + recovery fallback). Match that by
-// delegating to Landing so /signin renders the exact same view as /.
+// SignIn — the sign-in UX IS the Landing page (runtime-only; identity comes
+// from the Elastos runtime, there is no in-capsule auth). Delegate to Landing
+// so /signin renders the exact same view as /.
 
 use leptos::prelude::*;
 

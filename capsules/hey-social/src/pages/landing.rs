@@ -1,131 +1,77 @@
-// Landing — 1:1 port of capsules/hey-social/client/src/pages/Landing.jsx.
+// Landing / sign-in page — runtime-only (wallet capsule model).
 //
-// Same FloatingScene (gradient blobs + parallax SVG primitives), same
-// HeyMark (Dancing-Script wordmark with pencil-stroke draw + underline),
-// same passkey + recovery-key dual path. Uses the React capsule's
-// compiled stylesheet (styles.css, shipped alongside the WASM) verbatim
-// so class names like .frosted-card / .float-shape / .hey-pencil /
-// .hey-wordmark / .animate-fade-up resolve identically.
+// Keeps the original look (FloatingScene gradient blobs + the HeyMark
+// Dancing-Script wordmark) but there is NO in-capsule auth: identity comes
+// ONLY from the Elastos runtime — the identity provider (`identity/whoami`,
+// a provider-backed did:key with NO local seed) or an inherited runtime
+// session (`/api/session`, wallet SSO from Home's launch token). Without the
+// runtime the app does not open. On success we navigate to the feed.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 use leptos_router::NavigateOptions;
-use wasm_bindgen_futures::JsFuture;
 
-use crate::passkey::{passkey_supported, sign_in_via_runtime};
 use crate::session;
 
 #[component]
 pub fn Landing() -> impl IntoView {
     let navigate = use_navigate();
+    let checking = RwSignal::new(true);
+    let offline = RwSignal::new(false);
 
-    // Three-way sign-in check:
-    //   a. Local Session in localStorage    → already signed in, go to feed.
-    //   b. Runtime says we're signed in     → inherit identity from
-    //      /api/session (wallet-style SSO from Home's launch token),
-    //      bootstrap a thin Session with empty auth_key_hex, go to feed.
-    //   c. Neither                          → show the passkey CTA below.
-    //
-    // The inherit-from-runtime branch is async and runs from inside this
-    // Effect rather than from App boot — having Landing own its own
-    // navigation means the same component renders BOTH the "we tried
-    // and there's no inherited session" and the "we got one, go away"
-    // outcomes. No race between boot completion and Landing mount.
-    Effect::new({
+    // Ask the runtime who we are: an already-persisted runtime session, then the
+    // identity provider (no local seed), then an inherited runtime session. On
+    // success → feed; otherwise show the runtime-required state. There is NO
+    // passkey / local-seed fallback — auth lives in the runtime, not here.
+    let probe = {
         let navigate = navigate.clone();
-        move |_| {
-            if session::current().is_some() {
-                navigate("/home", NavigateOptions::default());
-                return;
-            }
+        move || {
             let navigate = navigate.clone();
+            checking.set(true);
+            offline.set(false);
             spawn_local(async move {
-                // No-tap identity (wallet model): adopt the runtime-projected
-                // identity via the identity provider first; fall back to the
-                // legacy /api/session inherit. If neither yields an identity,
-                // the passkey CTA below handles sign-in — so this still works
-                // on vanilla upstream (no provider) by falling through.
-                crate::runtime::boot_log("landing: attempting no-tap adoption (identity/whoami)");
+                if session::current().is_some() {
+                    navigate("/home", NavigateOptions::default());
+                    return;
+                }
+                crate::runtime::boot_log("landing: no-tap adoption (identity/whoami)");
                 let mut ok = crate::api::dms::adopt_provider_identity().await.is_some();
-                if ok {
-                    crate::runtime::boot_log("landing: adopted provider identity — no tap");
-                } else {
+                if !ok {
                     crate::runtime::boot_log("landing: no provider identity; trying legacy inherit");
                     if let Some(inherited) = crate::runtime::inherit_session().await {
                         session::set(&inherited);
                         ok = true;
-                        crate::runtime::boot_log("landing: inherited runtime session — no tap");
                     }
                 }
                 if ok {
                     crate::runtime::boot_log("landing: signed in — navigating to feed");
-                    // The boot splash stays up across the navigate; Home warps
-                    // it out as the feed flies in (one continuous tunnel).
                     navigate("/home", NavigateOptions::default());
                 } else {
-                    crate::runtime::boot_log("landing: no no-tap identity — showing passkey sign-in");
-                    // Reveal the passkey CTA underneath with a calm fade.
+                    crate::runtime::boot_log("landing: runtime unreachable — gated");
                     crate::runtime::hide_boot_splash();
-                }
-            });
-        }
-    });
-
-    let busy = RwSignal::new(false);
-    let leaving = RwSignal::new(false);
-    let error = RwSignal::new(String::new());
-    let can_use_passkey = passkey_supported();
-
-    let handle_passkey = {
-        let navigate = navigate.clone();
-        move |_| {
-            if busy.get() || leaving.get() {
-                return;
-            }
-            error.set(String::new());
-            busy.set(true);
-            let navigate = navigate.clone();
-            spawn_local(async move {
-                match sign_in_via_runtime(None).await {
-                    Ok(_session) => {
-                        busy.set(false);
-                        // First sign-in on this device → warp through to the
-                        // welcome page. Returning users (welcomed flag set)
-                        // skip straight to the feed — no warp, no welcome.
-                        if session::welcomed() {
-                            navigate("/home", NavigateOptions::default());
-                        } else {
-                            // Kick off the warp-out + navigate at full keyframe
-                            // completion (1 s) so the welcome page's warp-in
-                            // starts from the same scaled+blurred state — the
-                            // route swap reads as one continuous tunnel.
-                            leaving.set(true);
-                            wait_ms(1000).await;
-                            navigate("/welcome", NavigateOptions::default());
-                        }
-                    }
-                    Err(msg) => {
-                        busy.set(false);
-                        if msg.contains("NotAllowedError")
-                            || msg.contains("AbortError")
-                            || msg.to_lowercase().contains("cancel")
-                        {
-                            error.set("Passkey prompt closed. Tap to try again.".into());
-                        } else {
-                            error.set(msg);
-                        }
-                    }
+                    checking.set(false);
+                    offline.set(true);
                 }
             });
         }
     };
 
+    // Probe once on mount.
+    {
+        let probe = probe.clone();
+        Effect::new(move |_| {
+            probe();
+        });
+    }
+
+    let retry = {
+        let probe = probe.clone();
+        move |_| probe()
+    };
+
     view! {
-        <div
-            class="relative flex min-h-screen flex-col items-center justify-center px-4 py-10"
-            class:warp-transition=move || leaving.get()
-        >
+        <div class="relative flex min-h-screen flex-col items-center justify-center px-4 py-10">
             <FloatingScene />
 
             <div class="relative z-10 mx-auto max-w-2xl text-center">
@@ -142,55 +88,36 @@ pub fn Landing() -> impl IntoView {
                     class="mx-auto mt-4 max-w-lg text-base leading-7 text-muted animate-fade-up"
                     style="animation-delay: 1.0s"
                 >
-                    "Photo, video, and chat — peer-to-peer over Elastos. Sign in with the same passkey you used to set up this device. No password, no recovery key."
+                    "Photo, video, and chat — peer-to-peer over Elastos. Your identity comes from your Elastos runtime; there's nothing to sign in here."
                 </p>
 
                 <div
                     class="relative mx-auto mt-12 max-w-sm animate-fade-up"
                     style="animation-delay: 1.3s"
                 >
-                    {move || if can_use_passkey {
+                    {move || if checking.get() {
                         view! {
-                            <button
-                                type="button"
-                                on:click=handle_passkey.clone()
-                                prop:disabled=move || busy.get()
-                                class="group inline-flex w-full items-center justify-center gap-3 rounded-full bg-white/12 hover:bg-white/22 border border-white/25 backdrop-blur-xl px-8 py-4 text-base font-semibold text-primary shadow-2xl shadow-slate-950/40 transition hover:-translate-y-0.5 hover:shadow-amber-500/30 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                                <span class="inline-flex h-8 w-8 items-center justify-center rounded-full bg-accent text-accent-text shadow-md shadow-amber-500/30 group-hover:scale-110 transition-transform">
-                                    <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current">
-                                        <path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5Zm-3 8V7a3 3 0 0 1 6 0v3H9Z" />
-                                    </svg>
-                                </span>
-                                <span>
-                                    {move || if busy.get() { "Waiting for passkey…" } else { "Sign in with passkey" }}
-                                </span>
-                            </button>
+                            <p class="text-sm text-muted">"Connecting to your Elastos runtime…"</p>
                         }.into_any()
-                    } else {
+                    } else if offline.get() {
+                        let retry = retry.clone();
                         view! {
                             <div class="frosted-card p-5 text-sm text-muted">
-                                "Your browser doesn't support passkeys. Hey needs a passkey-capable browser (modern Chrome / Edge / Safari / Firefox)."
+                                <p>
+                                    "Hey gets your identity from your Elastos runtime. It isn't reachable right now — open Hey from your runtime's Home, then retry."
+                                </p>
+                                <button
+                                    type="button"
+                                    on:click=retry
+                                    class="mt-4 inline-flex w-full items-center justify-center rounded-full bg-white/12 hover:bg-white/22 border border-white/25 backdrop-blur-xl px-8 py-3 text-base font-semibold text-primary transition hover:-translate-y-0.5"
+                                >
+                                    "Retry"
+                                </button>
                             </div>
                         }.into_any()
+                    } else {
+                        ().into_any()
                     }}
-
-                    {move || {
-                        let msg = error.get();
-                        if msg.is_empty() { view! { <></> }.into_any() }
-                        else {
-                            view! {
-                                <p class="mt-4 animate-fade-in text-sm text-red-400">{msg}</p>
-                            }.into_any()
-                        }
-                    }}
-
-                    <p
-                        class="mt-8 text-xs text-muted animate-fade-in"
-                        style="animation-delay: 1.6s"
-                    >
-                        "One tap. Same passkey as System. Nothing to remember."
-                    </p>
                 </div>
             </div>
         </div>
@@ -340,13 +267,4 @@ fn HeyMark() -> impl IntoView {
             </svg>
         </div>
     }
-}
-
-async fn wait_ms(ms: i32) {
-    let win = web_sys::window().unwrap();
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        let _ = win
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
-    });
-    let _ = JsFuture::from(promise).await;
 }

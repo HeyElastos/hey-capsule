@@ -15,7 +15,6 @@ use hey_core::api::dms::{
     send_message, send_message_with_attachments, upload_attachment, Attachment, DmContact,
     DmMessage, IdentityMode,
 };
-use hey_core::passkey::{passkey_supported, sign_in_via_runtime};
 use hey_core::session;
 
 // Derive the router base from the iframe mount path. Under YunoHost the
@@ -61,119 +60,96 @@ pub fn App() -> impl IntoView {
     }
 }
 
-/// Root view: the passkey sign-in gate wraps the Telegram-desktop shell.
+/// Root view: the runtime sign-in gate wraps the Telegram-desktop shell.
 #[component]
 fn Root() -> impl IntoView {
     view! { <SignInGate /> }
 }
 
-// ── SignInGate ───────────────────────────────────────────────────────────
+// ── Runtime-only auth gate ────────────────────────────────────────────────
 //
-// If there's no session, show a centered sign-in card (passkey first,
-// recovery-key fallback). On success, flip `signed_in` to re-render into
-// the Shell. We seed the signal from `session::current()` so a returning
-// user with a persisted session lands straight in the app.
+// Identity comes ONLY from the Elastos runtime — either the identity provider
+// (`identity/whoami`: a provider-backed did:key with NO local seed, the runtime
+// signs & decrypts) or an inherited runtime session (`/api/session`, wallet SSO
+// from Home's launch token). There is deliberately NO local-seed / passkey
+// fallback: without the runtime there is no signing key in the browser, so the
+// app stays gated — no runtime, no app. A seed therefore never lives in
+// localStorage (the XSS-exfiltration surface the old passkey path carried).
+#[derive(Clone, Copy, PartialEq)]
+enum Gate {
+    Checking,
+    Ready,
+    Offline,
+}
+
+/// Ask the runtime who we are: provider identity first (no local seed), then an
+/// inherited runtime session. Returns true once a session is in place.
+async fn probe_runtime() -> bool {
+    if hey_core::api::dms::adopt_provider_identity().await.is_some() {
+        return true;
+    }
+    if let Some(inherited) = hey_core::runtime::inherit_session().await {
+        session::set(&inherited);
+        return true;
+    }
+    false
+}
+
 #[component]
 fn SignInGate() -> impl IntoView {
-    let signed_in = RwSignal::new(session::current().is_some());
+    // A legacy session carrying a local Ed25519 seed (auth_key_hex set) predates
+    // this gate. Drop it so no seed lingers in localStorage; identity is
+    // re-derived from the runtime below. clear() only removes the localStorage
+    // session record — it leaves the launch-token / capability caches in
+    // sessionStorage intact so the runtime probe can still redeem.
+    if let Some(s) = session::current() {
+        if !s.auth_key_hex.is_empty() {
+            session::clear();
+        }
+    }
 
-    // No-tap adoption (wallet model): with no local session, sign in without
-    // a passkey tap by deriving identity from the runtime — the same chain
-    // hey-social's Landing uses, so the two apps behave identically:
-    //
-    //   1. identity provider (`identity/whoami`) → provider-backed session
-    //      (did:key, no local seed → the runtime signs & decrypts).
-    //   2. fallback: inherit the runtime session (`/api/session`, wallet SSO
-    //      from Home's launch token). This is what actually no-taps users in
-    //      when the identity provider isn't registered yet — without it
-    //      hey-chat forces a passkey tap that hey-social never asks for.
-    //      inherit_session() returns a Session but does NOT persist it (unlike
-    //      adopt_provider_identity), so set() it before flipping signed_in.
-    //
-    // If neither yields an identity (vanilla upstream — both return None), this
-    // is a no-op and the card's passkey path is the fallback, so the app still
-    // works without the fork.
+    let gate = RwSignal::new(match session::current() {
+        // A runtime-backed session (did:key, empty seed) means we're already in.
+        Some(s) if !s.did_key.is_empty() => Gate::Ready,
+        _ => Gate::Checking,
+    });
+
+    // First probe on mount (skip if a runtime session already persisted).
     Effect::new(move |_| {
-        if signed_in.get_untracked() {
+        if gate.get_untracked() != Gate::Checking {
             return;
         }
         spawn_local(async move {
-            if hey_core::api::dms::adopt_provider_identity().await.is_some() {
-                signed_in.set(true);
-                return;
-            }
-            if let Some(inherited) = hey_core::runtime::inherit_session().await {
-                session::set(&inherited);
-                signed_in.set(true);
-            }
+            gate.set(if probe_runtime().await { Gate::Ready } else { Gate::Offline });
         });
     });
 
     view! {
         <Show
-            when=move || signed_in.get()
-            fallback=move || view! { <SignInCard signed_in=signed_in /> }
+            when=move || gate.get() == Gate::Ready
+            fallback=move || view! { <RuntimeGate gate=gate /> }
         >
             <Shell />
         </Show>
     }
 }
 
+// ── RuntimeGate: shown until the runtime projects an identity in ───────────
+//
+// Replaces the old in-capsule passkey card. The runtime (Home) authenticates
+// the user; this capsule only adopts the projected identity. While we ask, show
+// a connecting state; if the runtime is unreachable, block with a clear message
+// + retry. The app does not open without the runtime.
 #[component]
-fn SignInCard(signed_in: RwSignal<bool>) -> impl IntoView {
-    let busy = RwSignal::new(false);
-    let error = RwSignal::new(String::new());
-    // Recovery path: when toggled, reveal a nickname input + a button that
-    // calls sign_in_via_runtime(Some(name)).
-    let recovery_open = RwSignal::new(false);
-    let nickname = RwSignal::new(String::new());
-    let can_use_passkey = passkey_supported();
-
-    // Shared sign-in driver — `nick = None` is the plain passkey path,
-    // `Some(name)` the recovery-key path.
-    let do_sign_in = move |nick: Option<String>| {
-        if busy.get() {
+fn RuntimeGate(gate: RwSignal<Gate>) -> impl IntoView {
+    let retry = move |_| {
+        if gate.get() == Gate::Checking {
             return;
         }
-        error.set(String::new());
-        busy.set(true);
+        gate.set(Gate::Checking);
         spawn_local(async move {
-            match sign_in_via_runtime(nick).await {
-                Ok(s) => {
-                    // Engine persists the session on Ok; set it defensively
-                    // so `session::current()` is consistent, then re-render.
-                    session::set(&s);
-                    busy.set(false);
-                    signed_in.set(true);
-                }
-                Err(msg) => {
-                    busy.set(false);
-                    if msg.contains("NotAllowedError")
-                        || msg.contains("AbortError")
-                        || msg.to_lowercase().contains("cancel")
-                    {
-                        error.set("Passkey prompt closed. Tap to try again.".into());
-                    } else {
-                        error.set(msg);
-                    }
-                }
-            }
+            gate.set(if probe_runtime().await { Gate::Ready } else { Gate::Offline });
         });
-    };
-
-    let on_passkey = {
-        let do_sign_in = do_sign_in.clone();
-        move |_| do_sign_in(None)
-    };
-    let on_recovery = {
-        let do_sign_in = do_sign_in.clone();
-        move || {
-            let name = nickname.get().trim().to_string();
-            if name.is_empty() {
-                return;
-            }
-            do_sign_in(Some(name));
-        }
     };
 
     view! {
@@ -182,79 +158,22 @@ fn SignInCard(signed_in: RwSignal<bool>) -> impl IntoView {
                 <div class="msgr-signin-logo">"💬"</div>
                 <h1 class="msgr-signin-title">"Hey Chat"</h1>
                 <p class="msgr-signin-sub">
-                    "Private, peer-to-peer messaging on Elastos. Sign in with the same passkey you set up on this device."
+                    {move || if gate.get() == Gate::Checking {
+                        "Connecting to your Elastos runtime…"
+                    } else {
+                        "Hey Chat gets your identity from your Elastos runtime. The runtime isn't reachable right now — open Hey from your runtime's Home, then retry."
+                    }}
                 </p>
-
-                {move || if can_use_passkey {
-                    let on_passkey = on_passkey.clone();
+                {move || if gate.get() == Gate::Offline {
+                    let retry = retry.clone();
                     view! {
                         <button
                             type="button"
                             class="msgr-btn-primary msgr-signin-btn"
-                            on:click=on_passkey
-                            prop:disabled=move || busy.get()
+                            on:click=retry
                         >
-                            {move || if busy.get() { "Waiting for passkey…" } else { "Sign in with passkey" }}
+                            "Retry"
                         </button>
-                    }.into_any()
-                } else {
-                    view! {
-                        <div class="msgr-signin-warn">
-                            "This browser doesn't support passkeys. Use a modern Chrome / Edge / Safari / Firefox."
-                        </div>
-                    }.into_any()
-                }}
-
-                {move || {
-                    let msg = error.get();
-                    if msg.is_empty() {
-                        ().into_any()
-                    } else {
-                        view! { <p class="msgr-error">{msg}</p> }.into_any()
-                    }
-                }}
-
-                <button
-                    type="button"
-                    class="msgr-link-btn"
-                    on:click=move |_| recovery_open.update(|v| *v = !*v)
-                >
-                    "Use a recovery key"
-                </button>
-
-                {move || if recovery_open.get() {
-                    let on_recovery = on_recovery.clone();
-                    let on_recovery_key = on_recovery.clone();
-                    view! {
-                        <div class="msgr-recovery">
-                            <input
-                                type="text"
-                                class="msgr-input"
-                                placeholder="Nickname"
-                                prop:value=move || nickname.get()
-                                on:input=move |ev: Event| {
-                                    if let Some(t) = ev.target() {
-                                        if let Ok(i) = t.dyn_into::<HtmlInputElement>() {
-                                            nickname.set(i.value());
-                                        }
-                                    }
-                                }
-                                on:keydown=move |ev: KeyboardEvent| {
-                                    if ev.key() == "Enter" {
-                                        ev.prevent_default();
-                                        on_recovery_key();
-                                    }
-                                }
-                            />
-                            <button
-                                type="button"
-                                class="msgr-btn-secondary"
-                                on:click=move |_| on_recovery()
-                                prop:disabled=move || busy.get() || nickname.get().trim().is_empty()
-                            >
-                                "Continue"
-                            </button>
-                        </div>
                     }.into_any()
                 } else {
                     ().into_any()
