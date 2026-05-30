@@ -2373,9 +2373,11 @@ pub async fn self_test_v2() -> Result<String, String> {
 // ── Double Ratchet self-test (pure, no storage/provider) ─────────────
 //
 // Drives two in-memory ratchet states through bootstrap + a multi-message
-// exchange and asserts the must-fix failure modes. Runnable from a wasm debug
-// console like self_test_v2; uses only the pure state machine + crypto, so it
-// needs neither a session, storage, nor the identity provider.
+// exchange and asserts the must-fix failure modes. Touches no session, storage,
+// or identity provider — but it is NOT host-pure: the state machine stamps
+// skipped-key timestamps via js_sys::Date::now, so run it from a wasm debug
+// console like self_test_v2 (not native `cargo test`). A wasm_bindgen_test
+// wrapper to gate it in CI is a TODO.
 
 /// Seal `text` as a ratchet message from `st` to a recipient whose STATIC
 /// ML-KEM public key is `recip_kem_pub`. Returns the wire page number + env.

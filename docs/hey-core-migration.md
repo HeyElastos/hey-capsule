@@ -25,7 +25,21 @@ Status legend: ✅ done · 🔜 next · ⏳ later · 🧊 frozen (do not touch)
 exact values (capsule_id "hey-social", namespace "Hey", session_key
 "hey-social-session", + all sessionStorage keys + the 5-entry boot wants-list).
 
-### 🔜 Phase A.2 — runtime auth/transport core + passkey (verified equivalent, NOT yet executed)
+### ✅ Phase A.2 DONE — runtime auth/transport core re-exported (verified)
+`runtime.rs` went 1373→~340 lines. `pub use hey_core::runtime::{api_base, api_url,
+home_launch_token, redeem_launch_token, bearer_ready, upstream_fetch,
+ensure_capability_token, provider_call, peer, did_provider, storage, transcoder,
+shared_read_json, shared_write_json, acquire_boot_capabilities,
+scrub_launch_token_from_url, inherit_session, session_current, RuntimeError,
+SharedIdentity}`. Kept local: `content` (+`ipfs`) with the CID cache,
+`identity_provider`, boot helpers (`boot_log`/`warp_boot_into_feed`/`hide_boot_splash`/
+`sleep_ms`) + `window`/`encode_uri`. A 9-dimension **adversarial workflow** (each agent
+diffing engine vs the pre-migration `883531b` source + the ctx wiring) returned
+**allEquivalent=true, 0 breaking** — endpoints/headers/storage-paths/sessionStorage-key-names
+all match modulo ctx; no re-login. Known cosmetic: engine log prefixes still hardcode
+`[hey-social]` (mislabels hey-messenger logs — parameterize via `ctx::capsule_id()` later).
+
+### (historical) Phase A.2 candidates — now done above
 These are **equivalent modulo ctx** in both files (diffed): `RuntimeError`,
 `api_base`, `api_url`, `home_launch_token`, `redeem_launch_token`,
 `bearer_ready`, `upstream_fetch`, `ensure_capability_token`, `provider_call`,
